@@ -23,6 +23,18 @@
 (defn image-url [card]
   (str "/img/cards/" (:code card) ".png"))
 
+(defn trans-image-url [card trans-lang]
+  (case trans-lang
+    "German" (str "/img/translated/de/" (:code card) ".png")
+    "Spanish" (str "/img/translated/es/" (:code card) ".png")
+    "French" (str "/img/translated/fr/" (:code card) ".png")
+    "Italian" (str "/img/translated/it/" (:code card) ".png")
+    "Japanese" (str "/img/translated/jp/" (:code card) ".png")
+    "Korea" (str "/img/translated/kr/" (:code card) ".png")
+    "Polish" (str "/img/translated/pl/" (:code card) ".png")
+    "Chinese" (str "/img/translated/zh/" (:code card) ".png")
+    nil))
+
 (defn add-symbols [card-text]
   (-> (if (nil? card-text) "" card-text)
       (make-span "\\[Credits\\]" "credit")
@@ -77,9 +89,52 @@
                        [:pre {:dangerouslySetInnerHTML #js {:__html (add-symbols (:text card))}}]])
           (when-not (:showText state)
             (when-let [url (image-url card)]
+              [:div {:class "card-area"}
               [:img {:src url
+                     :class "card-preview"
                      :onError #(-> (om/set-state! owner {:showText true}))
-                     :onLoad #(-> % .-target js/$ .show)}]))])))))
+                     :onLoad #(-> % .-target js/$ .show)}]
+
+              (let [trans-lang (get-in @app-state [:options :trans-lang])]
+                (let [trans-url (trans-image-url card trans-lang)]
+                (case trans-lang
+                  "German"  [:img {:src trans-url
+                                     :class "translation_de"
+                                     :onError nil
+                                     :onLoad #(-> % .-target js/$ .show)}]
+                  "Spanish"  [:img {:src trans-url
+                                     :class "translation_es"
+                                     :onError nil
+                                     :onLoad #(-> % .-target js/$ .show)}]
+
+                  "French"  [:img {:src trans-url
+                                     :class "translation_fr"
+                                     :onError nil
+                                     :onLoad #(-> % .-target js/$ .show)}]
+
+                  "Italian"  [:img {:src trans-url
+                                     :class "translation_it"
+                                     :onError nil
+                                     :onLoad #(-> % .-target js/$ .show)}]
+
+                  "Japanese"  [:img {:src trans-url
+                                     :class "translation_jp"
+                                     :onError nil
+                                     :onLoad #(-> % .-target js/$ .show)}]
+
+                  "Korean"  [:img {:src trans-url
+                                     :class "translation_kr"
+                                     :onError nil
+                                     :onLoad #(-> % .-target js/$ .show)}]
+                  "Polish"  [:img {:src trans-url
+                                     :class "translation_pl"
+                                     :onError nil
+                                     :onLoad #(-> % .-target js/$ .show)}]
+
+                  "Chinese" [:img {:src trans-url
+                                 :class "translation_zh"}]
+                  nil)))
+              ]))])))))
 
 (defn types [side]
   (let [runner-types ["Identity" "Program" "Hardware" "Resource" "Event"]
