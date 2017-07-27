@@ -25,14 +25,22 @@
 
 (defn trans-image-url [card trans-lang]
   (case trans-lang
-    "German" (str "/img/translated/de/" (:code card) ".png")
-    "Spanish" (str "/img/translated/es/" (:code card) ".png")
-    "French" (str "/img/translated/fr/" (:code card) ".png")
-    "Italian" (str "/img/translated/it/" (:code card) ".png")
-    "Japanese" (str "/img/translated/jp/" (:code card) ".png")
-    "Korea" (str "/img/translated/kr/" (:code card) ".png")
-    "Polish" (str "/img/translated/pl/" (:code card) ".png")
-    "Chinese" (str "/img/translated/zh/" (:code card) ".png")
+    "German" [(str "/img/translated/de/" (:code card) ".png")
+              "translation_de"]
+    "Spanish" [(str "/img/translated/es/" (:code card) ".png")
+               "translation_es"]
+    "French" [(str "/img/translated/fr/" (:code card) ".png")
+              "translation_fr"]
+    "Italian" [(str "/img/translated/it/" (:code card) ".png")
+               "translation_it"]
+    "Japanese" [(str "/img/translated/jp/" (:code card) ".png")
+                "translation_jp"]
+    "Korea" [(str "/img/translated/kr/" (:code card) ".png")
+             "translation_kr"]
+    "Polish" [(str "/img/translated/pl/" (:code card) ".png")
+              "translation_pl"]
+    "Chinese" [(str "/img/translated/zh/" (:code card) ".png")
+               "translation_zh"]
     nil))
 
 (defn add-symbols [card-text]
@@ -91,49 +99,17 @@
             (when-let [url (image-url card)]
               [:div {:class "card-area"}
               [:img {:src url
-                     :class "card-preview"
+                     :class "plain-card-image"
                      :onError #(-> (om/set-state! owner {:showText true}))
                      :onLoad #(-> % .-target js/$ .show)}]
 
               (let [trans-lang (get-in @app-state [:options :trans-lang])]
-                (let [trans-url (trans-image-url card trans-lang)]
-                (case trans-lang
-                  "German"  [:img {:src trans-url
-                                     :class "translation_de"
-                                     :onError nil
-                                     :onLoad #(-> % .-target js/$ .show)}]
-                  "Spanish"  [:img {:src trans-url
-                                     :class "translation_es"
-                                     :onError nil
-                                     :onLoad #(-> % .-target js/$ .show)}]
-
-                  "French"  [:img {:src trans-url
-                                     :class "translation_fr"
-                                     :onError nil
-                                     :onLoad #(-> % .-target js/$ .show)}]
-
-                  "Italian"  [:img {:src trans-url
-                                     :class "translation_it"
-                                     :onError nil
-                                     :onLoad #(-> % .-target js/$ .show)}]
-
-                  "Japanese"  [:img {:src trans-url
-                                     :class "translation_jp"
-                                     :onError nil
-                                     :onLoad #(-> % .-target js/$ .show)}]
-
-                  "Korean"  [:img {:src trans-url
-                                     :class "translation_kr"
-                                     :onError nil
-                                     :onLoad #(-> % .-target js/$ .show)}]
-                  "Polish"  [:img {:src trans-url
-                                     :class "translation_pl"
-                                     :onError nil
-                                     :onLoad #(-> % .-target js/$ .show)}]
-
-                  "Chinese" [:img {:src trans-url
-                                 :class "translation_zh"}]
-                  nil)))
+                (let [[trans-url style] (trans-image-url card trans-lang)]
+                (when-not (nil? trans-url)
+                  [:img {:src trans-url
+                         :class style
+                         :onError #(-> % .-target js/$ .hide)
+                         :onLoad #(-> % .-target js/$ .show)}])))
               ]))])))))
 
 (defn types [side]
