@@ -24,9 +24,9 @@
   (swap! app-state assoc-in [:options :background] (om/get-state owner :background))
   (swap! app-state assoc-in [:options :show-alt-art] (om/get-state owner :show-alt-art))
   (swap! app-state assoc-in [:options :sounds-volume] (om/get-state owner :volume))
-  (swap! app-state assoc-in [:options :trans-lang] (om/get-state owner :trans-lang))
   (.setItem js/localStorage "sounds" (om/get-state owner :sounds))
   (.setItem js/localStorage "sounds_volume" (om/get-state owner :volume))
+  (swap! app-state assoc-in [:options :trans-lang] (om/get-state owner :trans-lang))
   (.setItem js/localStorage "trans-lang" (om/get-state owner :trans-lang))
 
   (let [params (:options @app-state)]
@@ -108,17 +108,22 @@
 
             [:section
              [:h3 "Language"]
-             [:select {:name "language",
-                       :id "language"}
-               [:option {:value "English" 
-                :selected (= "English" (om/get-state owner :trans-lang))
-                :on-change #(om/set-state! owner :trans-lang (.. % -target -value))}
-                "English"]
-               [:option {:value "Japanese" 
-                :selected (= "Japanese" (om/get-state owner :trans-lang))
-                :on-change #(om/set-state! owner :trans-lang (.. % -target -value))}
-                "Japanese"]]]
-
+             (for [option [{:name "English"   :ref "English"}
+                           {:name "German"   :ref "German"}
+                           {:name "Spanish"   :ref "Spanish"}
+                           {:name "French"   :ref "French"}
+                           {:name "Italian"   :ref "Italian"}
+                           {:name "Japanese"  :ref "Japanese"}
+                           {:name "Korea"     :ref "Korea"}
+                           {:name "Polish"   :ref "Polish"}
+                           {:name "Chinese"   :ref "Chinese"}]]
+               [:div.radio
+                [:label [:input {:type "radio"
+                                 :name "trans-lang"
+                                 :value (:ref option)
+                                 :on-change #(om/set-state! owner :trans-lang (.. % -target -value))
+                                 :checked (= (om/get-state owner :trans-lang) (:ref option))}]
+                 (:name option)]])]
             [:p
              [:button "Update Profile"]
              [:span.flash-message (:flash-message state)]]]]]]))))
