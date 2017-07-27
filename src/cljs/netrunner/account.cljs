@@ -24,8 +24,10 @@
   (swap! app-state assoc-in [:options :background] (om/get-state owner :background))
   (swap! app-state assoc-in [:options :show-alt-art] (om/get-state owner :show-alt-art))
   (swap! app-state assoc-in [:options :sounds-volume] (om/get-state owner :volume))
+  (swap! app-state assoc-in [:options :trans-lang] (om/get-state owner :trans-lang))
   (.setItem js/localStorage "sounds" (om/get-state owner :sounds))
   (.setItem js/localStorage "sounds_volume" (om/get-state owner :volume))
+  (.setItem js/localStorage "trans-lang" (om/get-state owner :trans-lang))
 
   (let [params (:options @app-state)]
     (go (let [response (<! (POST url params :json))]
@@ -46,7 +48,8 @@
       (om/set-state! owner :background (get-in @app-state [:options :background]))
       (om/set-state! owner :sounds (get-in @app-state [:options :sounds]))
       (om/set-state! owner :show-alt-art (get-in @app-state [:options :show-alt-art]))
-      (om/set-state! owner :volume (get-in @app-state [:options :sounds-volume])))
+      (om/set-state! owner :volume (get-in @app-state [:options :sounds-volume]))
+      (om/set-state! owner :trans-lang (get-in @app-state [:options :trans-lang])))
 
     om/IRenderState
     (render-state [this state]
@@ -102,6 +105,19 @@
                                :checked (om/get-state owner :show-alt-art)
                                :on-change #(om/set-state! owner :show-alt-art (.. % -target -checked))}]
                "Show alternate card arts"]]]
+
+            [:section
+             [:h3 "Language"]
+             [:select {:name "language",
+                       :id "language"}
+               [:option {:value "English" 
+                :selected (= "English" (om/get-state owner :trans-lang))
+                :on-change #(om/set-state! owner :trans-lang (.. % -target -value))}
+                "English"]
+               [:option {:value "Japanese" 
+                :selected (= "Japanese" (om/get-state owner :trans-lang))
+                :on-change #(om/set-state! owner :trans-lang (.. % -target -value))}
+                "Japanese"]]]
 
             [:p
              [:button "Update Profile"]
