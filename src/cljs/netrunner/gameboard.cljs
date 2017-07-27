@@ -22,6 +22,27 @@
                   (first (:versions alt-art)))]
     (str "/img/cards/" code (when version (str "-" version)) ".png")))
 
+(defn trans-image-url [{:keys [side code] :as card}]
+  (let [trans-lang (get-in @app-state [:options :trans-lang])]
+    (case trans-lang
+      "German" [(str "/img/translated/de/" code ".png")
+                "translation_de"]
+      "Spanish" [(str "/img/translated/es/" code ".png")
+                 "translation_es"]
+      "French" [(str "/img/translated/fr/" code ".png")
+                 "translation_fr"]
+      "Italian" [(str "/img/translated/it/" code ".png")
+                 "translation_it"]
+      "Japanese" [(str "/img/translated/jp/" code ".png")
+                  "translation_jp"]
+      "Korean" [(str "/img/translated/kr/" code ".png")
+                "translation_kr"]
+      "Polish" [(str "/img/translated/pl/" code ".png")
+                "translation_pl"]
+      "Chinese" [(str "/img/translated/zh/" code ".png")
+                 "translation_zh"]
+      nil)))
+
 (defn toastr-options
   "Function that generates the correct toastr options for specified settings"
   [options]
@@ -537,7 +558,15 @@
                                             "" (str ": " (:subtype card)))]
       [:pre {:dangerouslySetInnerHTML #js {:__html (add-symbols (:text card))}}]]
      (when-let [url (image-url card)]
-       [:img {:src url :onLoad #(-> % .-target js/$ .show)}])])))
+      (let [[trans-url style] (trans-image-url card)]
+        [:div.card-area
+          [:img {:src url 
+                 :class "plain-card-image"
+                 :onLoad #(-> % .-target js/$ .show)}]
+          [:img {:src trans-url
+                 :class style
+                 :onError #(-> % .-target js/$ .hide)
+                 :onLoad #(-> % .-target js/$ .show)}]]))])))
 
 (defn card-view [{:keys [zone code type abilities counter advance-counter advancementcost current-cost subtype
                          advanceable rezzed strength current-strength title remotes selected hosted
