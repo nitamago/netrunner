@@ -60,7 +60,7 @@
 (defn card-view [card owner]
   (reify
     om/IInitState
-    (init-state [_] {:showText false})
+    (init-state [_] {:showText false :showTransText false})
     om/IRenderState
     (render-state [_ state]
       (let [ifShowText #(when (:showText state) %)]
@@ -102,14 +102,13 @@
                      :class "plain-card-image"
                      :onError #(-> (om/set-state! owner {:showText true}))
                      :onLoad #(-> % .-target js/$ .show)}]
-
               (let [trans-lang (get-in @app-state [:options :trans-lang])]
-                (let [[trans-url style] (trans-image-url card trans-lang)]
-                (when-not (nil? trans-url)
-                  [:img {:src trans-url
-                         :class style
-                         :onError #(-> % .-target js/$ .hide)
-                         :onLoad #(-> % .-target js/$ .show)}])))
+                  (let [[trans-url style] (trans-image-url card trans-lang)]
+                    (when-not (nil? trans-url)
+                      [:img {:src trans-url
+                             :class style
+                             :onError #(-> % .-target js/$ .hide)
+                             :onLoad #(-> % .-target js/$ .show)}])))
               ]))])))))
 
 (defn types [side]
