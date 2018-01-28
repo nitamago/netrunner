@@ -28,12 +28,12 @@ h2
 
 h3
   font-size: 20px
-  margin: 0 0 4px
+  margin: 0 0 6px
 
 h4
   font-size: 14px
   line-height: 18px
-  margin: 0 0 2px
+  margin: 0 0 4px
 
 a
   text-decoration: none
@@ -108,7 +108,7 @@ button, a.button
   border-radius: 4px
   font-size: 12px
   padding: 4px 12px
-  margin: 0 2px
+  margin: 0 8px 0 0
   background-color: transparent-orange
   border: 1px solid orange
   color: white
@@ -252,6 +252,18 @@ span.small
   text-overflow: ellipsis
 
 .disabled
+  opacity: 0.5
+  box-shadow(none)
+  cursor: auto
+
+  &:hover, &:focus
+    box-shadow(none)
+    border-color: orange
+
+.rotated
+  color: white
+  background-color: grey
+  border-color: orangered
   opacity: 0.5
   box-shadow(none)
   cursor: auto
@@ -490,6 +502,39 @@ nav ul
 .active-player
   border: 1px solid #ffa500
 
+// Win Message Box
+.win.centered
+  position: fixed
+  top: 30%
+  left: 45%
+  margin-top: -50px
+  margin-left: -100px
+  padding: 15px
+  border: 1px solid #ffa500
+  z-index: 2
+
+
+.win-right
+  position: absolute
+  top: 0px
+  right: -8px
+  border-radius: 0px
+  padding: 0
+  font-size: 12px
+  line-height: 14px
+  height: 15px
+  width: 15px
+  background-color: transparent
+
+  &:hover
+    background-color: transparent-orange
+    border-color: orange
+
+#stats
+  .content-page
+    margin-top: 9px
+  
+
 // Influence dots
 
 .influence.neutral
@@ -559,6 +604,9 @@ nav ul
 
   .concede-button
     margin-right: 12px
+
+  .mute-button
+    margin-left: 12px
 
 // Auth
 
@@ -634,6 +682,9 @@ nav ul
 .reset-bg
   cover-img: url('/img/bg/Logos.jpg')
 
+.stats-bg
+  cover-img: url('/img/bg/RumorMill.jpg')
+
 .traffic-jam-bg
   cover-img: url('/img/bg/TrafficJam.jpg')
 
@@ -654,6 +705,9 @@ nav ul
 
 .freelancer-bg
   cover-img: url('/img/bg/Freelancer.jpg')
+
+.monochrome-bg
+  cover-color: obsidian
 
 // Chat
 
@@ -678,6 +732,16 @@ nav ul
   flex-direction(column)
   min-height: 1px
 
+.chat-container
+  flex(2)
+  display-flex()
+  flex-direction(column)
+
+  .chat-card-zoom
+    position: absolute
+    left: -70px
+    transition(all 0.2s ease-in-out)
+
 .message
   display-flex()
   margin-bottom: 5px
@@ -701,6 +765,7 @@ nav ul
     font-weight: 300
     font-size: 12px
 
+
 .msg-box
   display-flex()
   flex(1)
@@ -719,6 +784,19 @@ nav ul
 .cardbrowser
   display-flex()
 
+  .heading, .type
+    font-weight: bold
+
+  .pack
+    font-style: italic
+
+  .selected-alt
+    font-style: italic
+    color: orange
+
+  .alt-art-selector
+    margin-top: 10px
+
 .filters
   flex(0 0 180px)
   margin: 10px
@@ -727,6 +805,13 @@ nav ul
   input, select
     width: 100%
     font-size: 13px
+
+  input.hide-rotated
+    width: auto
+
+  .hide-rotated-div
+    margin-top: 10px
+    margin-bottom: 20px
 
   h4
     margin-top: 5px
@@ -786,9 +871,15 @@ nav ul
   position: relative
   height: 348px
   width: 250px
-  margin: 0 10px 10px 0
+  margin: 0 10px 10px 2px
   border-radius: 8px
   padding: 10px
+
+  &.selected
+    box-shadow(0 0 1px 2px limegreen)
+
+  &.selected-alt
+    box-shadow(0 0 1px 2px orange)
 
   > h4
     margin-bottom: 5px
@@ -887,7 +978,7 @@ nav ul
   flex(1)
 
   .deckline
-    height: 49px
+    height: 65px
     padding: 5px 8px
     margin: 0 0 5px
     border: 1px solid white
@@ -953,7 +1044,6 @@ nav ul
 
         button
           width: 135px
-          margin-right: 5px
 
       .card-preview
         position: absolute
@@ -1060,9 +1150,11 @@ nav ul
         line-height: 18px
         flex(1)
 
-.deck-status
+.deck-status.shift-tooltip
+    padding-right: 12px
+
+.deck-status, .user-status
   position: relative
-  padding-right: 12px
 
   .status-tooltip
     display: none
@@ -1478,6 +1570,12 @@ nav ul
   .discard
     position: relative
 
+  .hand-container
+    position: relative
+
+  .hand-controls
+    display: inline-block
+
   .hand, .scored, .rfg
     height: 86px
     padding: 0
@@ -1485,6 +1583,11 @@ nav ul
   .hand
     width: 383px
     margin-right: 0
+    float: left
+
+  .hand-expand
+    float: right
+    margin-left: 2px
 
   .card-wrapper
     display: inline-block
@@ -1850,7 +1953,7 @@ nav ul
         -webkit-overflow-scrolling: touch
         position: absolute
         top: 0
-        bottom: 36px
+        bottom: 43px
         left: 0
         right: 4px
         margin: 0
@@ -1860,7 +1963,7 @@ nav ul
 
       > form
         position: absolute
-        bottom: 5px
+        bottom: 12px
         left: 0
         right: 4px
 
@@ -1912,14 +2015,43 @@ nav ul
   overflow: auto
   margin-top: -31px
 
+  section
+    margin-bottom: 20px
+
   .flash-message
     color: lawngreen
     margin-left: 16px
+
+  input, select
+    margin-right: 8px
 
   input[type="range"]
     position: relative
     top: 9px
     left: 16px
+
+  #alt-art
+    div#my-alt-art
+      margin-top: 10px
+
+    div.alt-art-group
+      clear: both
+      margin: 5px 0
+
+      > div
+        float: left
+        margin: 5px
+
+        > div
+          text-align: center
+    #set-all
+      clear: both
+    img.alt-art-select
+      width: 150px
+      margin-top: 5px
+
+    .reset-all
+      margin-top: 10px
 
 @keyframes highlight
   from

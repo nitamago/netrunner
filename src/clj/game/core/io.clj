@@ -12,7 +12,24 @@
       (when (and (not= side nil) (not= side :spectator))
         (command state side)
         (swap! state update-in [:log] #(conj % {:user nil :text (str "[!]" (:username author) " uses a command: " text)})))
-      (swap! state update-in [:log] #(conj % {:user author :text text})))))
+      (swap! state update-in [:log] #(conj % {:user author :text text})))
+    (swap! state assoc :typing (remove #{(:username author)} (:typing @state)))))
+
+(defn typing
+  "Updates game state list with username of whoever is typing"
+  [state side {:keys [user]}]
+  (let [author (:username (or user (get-in @state [side :user])))]
+    (swap! state assoc :typing (distinct (conj (:typing @state) author)))
+    ;; say something to force update in client side rendering
+    (say state side {:user "__system__" :text "typing"})))
+
+(defn typingstop
+  "Clears typing flag from game state for user"
+  [state side {:keys [user text]}]
+  (let [author (or user (get-in @state [side :user]))]
+    (swap! state assoc :typing (remove #{(:username author)} (:typing @state)))
+    ;; say something to force update in client side rendering
+    (say state side {:user "__system__" :text "typing"})))
 
 (defn system-msg
   "Prints a message to the log without a username."
@@ -113,13 +130,23 @@
                                      (and (card-is? target :side :runner) (has-subtype? target "Virus")) :virus)
                         advance (= :advance-counter c-type)]
                     (cond advance (set-adv-counter state side target value)
-                          (not c-type) (toast state side "You need to specify a counter type for that card." "error"
+                          (not c-type) (toast state side (str "Could not infer what counter type you mean. Please specify one manually, by typing "
+                                                              "'/counter TYPE " value "', where TYPE is advance, agenda, credit, power, or virus.")
+                                              "error"
                                               {:time-out 0 :close-button true})
                           :else (do (set-prop state side target :counter (merge (:counter target) {c-type value}))
                                     (system-msg state side (str "sets " (name c-type) " counters to " value " on "
                                                                 (card-str state target)))))))
      :choices {:req (fn [t] (card-is? t :side side))}}
     {:title "/counter command"} nil))
+
+(defn command-facedown [state side]
+  (resolve-ability state side
+                   {:prompt "Select a card to install facedown"
+                    :choices {:req #(and (= (:side %) "Runner")
+                                         (in-hand? %))}
+                    :effect (effect (runner-install target {:facedown true}))}
+                   {:title "/faceup command"} nil))
 
 (defn command-counter [state side args]
   (if (= 1 (count args))
@@ -153,6 +180,9 @@
                                             (rez state side c {:ignore-cost :all-costs :force true}))))}}}
     {:title "/rez-all command"} nil))
 
+(defn command-roll [state side value]
+  (system-msg state side (str "rolls a " value " sided die and rolls a " (inc (rand-int value)))))
+
 (defn command-close-prompt [state side]
   (when-let [fprompt (-> @state side :prompt first)]
     (swap! state update-in [side :prompt] rest)
@@ -177,6 +207,7 @@
                                                                             ": " (get-card state target))))
                                            :choices {:req (fn [t] (card-is? t :side %2))}}
                                           {:title "/card-info command"} nil)
+          "/clear-win"  #(clear-win %1 %2)
           "/click"      #(swap! %1 assoc-in [%2 :click] (max 0 value))
           "/close-prompt" #(command-close-prompt %1 %2)
           "/counter"    #(command-counter %1 %2 args)
@@ -218,6 +249,9 @@
                                                           (move %1 %2 c :rfg)))
                                            :choices {:req (fn [t] (card-is? t :side %2))}}
                                           {:title "/rfg command"} nil)
+          "/facedown"   #(when (= %2 :runner)
+                           (command-facedown %1 %2))
+          "/roll"       #(command-roll %1 %2 value)
           "/tag"        #(swap! %1 assoc-in [%2 :tag] (max 0 value))
           "/take-brain" #(when (= %2 :runner) (damage %1 %2 :brain (max 0 value)))
           "/take-meat"  #(when (= %2 :runner) (damage %1 %2 :meat  (max 0 value)))
@@ -246,11 +280,8 @@
 (defn event-title
   "Gets a string describing the internal engine event keyword"
   [event]
-  (case event
-    :agenda-scored "agenda-scored"
-    :agenda-stolen "agenda-stolen"
-    :runner-install "runner-install"
-    :successful-run "successful-run"
+  (if (keyword? event)
+    (name event)
     (str event)))
 
 (defn show-error-toast

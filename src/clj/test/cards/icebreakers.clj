@@ -196,7 +196,7 @@
   ;; Multiple sources of net damage vs. Deus X
   (do-game
     (new-game
-      (make-deck "Jinteki: Personal Evolution" [(qty "Fetal AI" 1)])
+      (make-deck "Jinteki: Personal Evolution" [(qty "Fetal AI" 6)])
       (default-runner [(qty "Deus X" 3) (qty "Sure Gamble" 2)]))
     (play-from-hand state :corp "Fetal AI" "New remote")
     (take-credits state :corp)
@@ -287,6 +287,48 @@
     (is (:icon (refresh iw)) "Ice Wall has an icon")
     (core/trash state :corp iw)
     (is (not (:icon (refresh iw))) "Ice Wall does not have an icon after itself trashed"))))
+
+(deftest nanotk-install-ice-during-run
+  ;; Na'Not'K - Strength adjusts accordingly when ice installed during run
+  (do-game
+    (new-game (default-corp [(qty "Architect" 1) (qty "Eli 1.0" 1)])
+              (default-runner [(qty "Na'Not'K" 1)]))
+    (play-from-hand state :corp "Architect" "HQ")
+    (take-credits state :corp)
+    (play-from-hand state :runner "Na'Not'K")
+    (let [nanotk (get-program state 0)
+          architect (get-ice state :hq 0)]
+      (is (= 1 (:current-strength (refresh nanotk))) "Default strength")
+      (run-on state "HQ")
+      (core/rez state :corp architect)
+      (is (= 2 (:current-strength (refresh nanotk))) "1 ice on HQ")
+      (card-subroutine state :corp (refresh architect) 1)
+      (prompt-select :corp (find-card "Eli 1.0" (:hand (get-corp))))
+      (prompt-choice :corp "HQ")
+      (is (= 3 (:current-strength (refresh nanotk))) "2 ice on HQ")
+      (run-jack-out state)
+      (is (= 1 (:current-strength (refresh nanotk))) "Back to default strength"))))
+
+(deftest nanotk-redirect
+  ;; Na'Not'K - Strength adjusts accordingly when run redirected to another server
+  (do-game
+    (new-game (default-corp [(qty "Susanoo-no-Mikoto" 1) (qty "Crick" 1) (qty "Cortex Lock" 1)])
+              (default-runner [(qty "Na'Not'K" 1)]))
+    (play-from-hand state :corp "Cortex Lock" "HQ")
+    (play-from-hand state :corp "Susanoo-no-Mikoto" "HQ")
+    (play-from-hand state :corp "Crick" "Archives")
+    (take-credits state :corp)
+    (play-from-hand state :runner "Na'Not'K")
+    (let [nanotk (get-program state 0)
+          susanoo (get-ice state :hq 1)]
+      (is (= 1 (:current-strength (refresh nanotk))) "Default strength")
+      (run-on state "HQ")
+      (core/rez state :corp susanoo)
+      (is (= 3 (:current-strength (refresh nanotk))) "2 ice on HQ")
+      (card-subroutine state :corp (refresh susanoo) 0)
+      (is (= 2 (:current-strength (refresh nanotk))) "1 ice on Archives")
+      (run-jack-out state)
+      (is (= 1 (:current-strength (refresh nanotk))) "Back to default strength"))))
 
 (deftest overmind-counters
   ;; Overmind - Start with counters equal to unused MU
@@ -436,3 +478,33 @@
      (is (= 0 (:current-strength (refresh ice-wall))) "Strength of Ice Wall reduced to 0")
      (card-ability state :runner wyrm 1)
      (is (= -1 (:current-strength (refresh ice-wall))) "Strength of Ice Wall reduced to -1"))))
+
+(deftest yusuf
+  ;; Yusuf gains virus counters on successful runs and can spend virus counters from any installed card
+  (do-game
+    (new-game (default-corp)
+              (default-runner [(qty "Yusuf" 1) (qty "Cache" 1)]))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Yusuf")
+    (play-from-hand state :runner "Cache")
+    (let [yusuf (get-program state 0)
+          cache (get-program state 1)]
+      (run-empty-server state "Archives")
+      (is (= 1 (get-in (refresh yusuf) [:counter :virus])) "Yusuf has 1 virus counter")
+      (is (= 3 (:current-strength (refresh yusuf))) "Initial Yusuf strength")
+      (is (= 3 (get-in (refresh cache) [:counter :virus])) "Initial Cache virus counters")
+      (card-ability state :runner yusuf 0)
+      (prompt-select :runner cache)
+      (prompt-choice :runner 1)
+      (is (= 2 (get-in (refresh cache) [:counter :virus])) "Cache lost a virus counter to pump")
+      (is (= 4 (:current-strength (refresh yusuf))) "Yusuf strength 4")
+      (is (= 1 (get-in (refresh yusuf) [:counter :virus])) "Initial Yusuf virus counters")
+      (card-ability state :runner yusuf 0)
+      (prompt-select :runner yusuf)
+      (prompt-choice :runner 1)
+      (is (= 5 (:current-strength (refresh yusuf))) "Yusuf strength 5")
+      (is (= 0 (get-in (refresh yusuf) [:counter :virus])) "Yusuf lost a virus counter")
+      (card-ability state :runner yusuf 1)
+      (prompt-select :runner cache)
+      (prompt-choice :runner 1)
+      (is (= 1 (get-in (refresh cache) [:counter :virus])) "Cache lost a virus counter to break"))))

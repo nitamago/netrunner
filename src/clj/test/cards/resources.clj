@@ -40,6 +40,24 @@
    (take-credits state :corp)
    (is (= 3 (:click (get-runner))) "Should have lost 2 clicks and gained 1 click")))
 
+(deftest adjusted-chronotype-mca
+  ;; Chronotype to cancel out MCA click loss
+  (do-game
+    (new-game
+      (default-corp [(qty "MCA Austerity Policy" 1)])
+      (default-runner [(qty "Adjusted Chronotype" 1)]))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Adjusted Chronotype")
+    (take-credits state :runner)
+    (play-from-hand state :corp "MCA Austerity Policy" "New remote")
+    (let [mca (get-content state :remote1 0)]
+      (core/rez state :corp mca)
+      (card-ability state :corp mca 0)
+      (is (= 1 (get-counters (refresh mca) :power)))
+      (take-credits state :corp)
+      ; runner does not lose a click
+      (is (= 4 (:click (get-runner)))))))
+
 (deftest adjusted-chronotype-gcs
   ;; Ensure adjusted chronotype gains 2 clicks when 2 clicks are lost and GCS is installed
   (do-game
@@ -283,6 +301,36 @@
       (-> @state :runner :discard count (= 1) (is "Counter Surveillance trashed"))
       (-> @state :runner :credit (= 2) (is "Runner has 2 credits")))))
 
+(deftest counter-surveillance-obelus
+  ;; Test Obelus does not trigger before Counter Surveillance accesses are done. Issues #2675
+  (do-game
+    (new-game (default-corp [(qty "Hedge Fund" 3)])
+              (default-runner [(qty "Counter Surveillance" 1) (qty "Obelus" 1) (qty "Sure Gamble" 3)]))
+    (starting-hand state :runner ["Counter Surveillance" "Obelus"])
+    (take-credits state :corp)
+    (core/gain state :runner :tag 2)
+    (core/gain state :runner :credit 2)
+    (-> (get-runner) :credit (= 7) (is "Runner has 7 credits"))
+    (play-from-hand state :runner "Counter Surveillance")
+    (play-from-hand state :runner "Obelus")
+    (-> (get-runner) :credit (= 2) (is "Runner has 2 credits")) ; Runner has enough credits to pay for CS
+    (let [cs (get-in @state [:runner :rig :resource 0])]
+      (card-ability state :runner cs 0)
+      (prompt-choice :runner "HQ")
+      (run-successful state)
+      (-> (get-runner) :register :successful-run (= [:hq]) is)
+      (-> (get-runner) :hand count zero? (is "Runner did not draw cards from Obelus yet"))
+      (prompt-choice :runner "Card from hand")
+      (-> (get-runner) :prompt first :msg (= "You accessed Hedge Fund") is)
+      (-> (get-runner) :hand count zero? (is "Runner did not draw cards from Obelus yet"))
+      (prompt-choice :runner "OK")
+      (prompt-choice :runner "Card from hand")
+      (-> (get-runner) :prompt first :msg (= "You accessed Hedge Fund") is)
+      (prompt-choice :runner "OK")
+      (-> (get-runner) :hand count (= 2) (is "Runner did draw cards from Obelus after all accesses are done"))
+      (-> (get-runner) :discard count (= 1) (is "Counter Surveillance trashed"))
+      (-> (get-runner) :credit (= 0) (is "Runner has no credits")))))
+
 (deftest-pending councilman-zone-change
   ;; Rezz no longer prevented when card changes zone (issues #1571)
   (do-game
@@ -422,9 +470,23 @@
     (core/no-action state :corp nil)
     (play-from-hand state :runner "Eden Shard")
     (is (= 5 (:credit (get-runner))) "Eden Shard installed for 0c")
+    (is (not (:run @state)) "Run is over")
     (card-ability state :runner (get-resource state 0) 0)
     (is (= 3 (count (:hand (get-corp)))) "Corp drew 2 cards")
     (is (= 1 (count (:discard (get-runner)))) "Eden Shard trashed")))
+
+(deftest eden-shard-no-install-on-access
+  ;; Eden Shard - Do not install when accessing cards
+  (do-game
+    (new-game (default-corp)
+              (default-runner [(qty "Eden Shard" 1)]))
+    (starting-hand state :corp ["Hedge Fund"])
+    (take-credits state :corp)
+    (is (= 1 (count (:hand (get-corp)))))
+    (run-empty-server state :rd)
+    (play-from-hand state :runner "Eden Shard")
+    (is (not (get-resource state 0)) "Eden Shard not installed")
+    (is (= 1 (count (:hand (get-runner)))) "Eden Shard not installed")))
 
 (deftest fan-site
   ;; Fan Site - Add to score area as 0 points when Corp scores an agenda
@@ -463,6 +525,26 @@
     (play-from-hand state :corp "Hostile Takeover" "New remote")
     (score-agenda state :corp (get-content state :remote2 0))
     (is (find-card "Fan Site" (:scored (get-corp))) "Fan Site not removed from Corp score area")))
+
+(deftest fan-site-forfeit
+  ;; Fan Site - Runner can forfeit Fan Site
+  (do-game
+    (new-game (default-corp [(qty "Hostile Takeover" 1)])
+              (default-runner [(qty "Fan Site" 1) (qty "Data Dealer" 1)]))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Fan Site")
+    (take-credits state :runner)
+    (play-from-hand state :corp "Hostile Takeover" "New remote")
+    (score-agenda state :corp (get-content state :remote1 0))
+    (is (= 0 (:agenda-point (get-runner))))
+    (is (= 1 (count (:scored (get-runner)))) "Fan Site added to Runner score area")
+    (take-credits state :corp)
+    (play-from-hand state :runner "Data Dealer")
+    (let [credits (:credit (get-runner))]
+      (card-ability state :runner (get-resource state 0) 0)
+      (prompt-select :runner (get-scored state :runner 0))
+      (is (= 0 (count (:scored (get-runner)))) "Fan Site successfully forfeit to Data Dealer")
+      (is (= (+ credits 9) (:credit (get-runner))) "Gained 9 credits from Data Dealer"))))
 
 (deftest fester
   ;; Fester - Corp loses 2c (if able) when purging viruses
@@ -715,8 +797,12 @@
     (play-from-hand state :runner "Joshua B.")
     (take-credits state :runner)
     (take-credits state :corp)
-    (prompt-choice :runner "Yes") ; gain the extra click
-    (is (= 5 (:click (get-runner))) "Gained extra click")
+    (is (= 0 (:click (get-runner))) "Runner has 0 clicks")
+    (is (:runner-phase-12 @state) "Runner is in Step 1.2")
+    (card-ability state :runner (get-in @state [:runner :rig :resource 0]) 0)
+    (is (= 1 (:click (get-runner))) "Gained extra click from Joshua")
+    (core/end-phase-12 state :runner nil)
+    (is (= 5 (:click (get-runner))) "Gained normal clicks as well")
     (take-credits state :runner)
     (is (= 1 (:tag (get-runner))) "Took 1 tag")))
 
@@ -746,6 +832,33 @@
       (card-ability state :runner (refresh kati) 1)
       (is (= 14 (:credit (get-runner))) "Take 6cr from Kati")
       (is (zero? (get-counters (refresh kati) :credit)) "No counters left on Kati"))))
+
+(deftest lewi-guilherme
+  ;; Lewi Guilherme - lower corp hand size by 1, pay 1 credit when turn begins or trash
+  (do-game
+    (new-game (default-corp)
+              (default-runner [(qty "Lewi Guilherme" 2)]))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Lewi Guilherme")
+    (is (= -1 (:hand-size-modification (get-corp))) "Corp hand size reduced by 1")
+    (take-credits state :runner)
+    (core/lose state :runner :credit 6)
+    (is (= 2 (:credit (get-runner))) "Credits are 2")
+    (take-credits state :corp)
+    (prompt-choice :runner "Yes")
+    (is (= 1 (:credit (get-runner))) "Lost a credit from Lewi")
+    (take-credits state :runner)
+    (take-credits state :corp)
+    (prompt-choice :runner "No")
+    (is (= 1 (count (:discard (get-runner)))) "First Lewi trashed")
+    (is (= 0 (:hand-size-modification (get-corp))) "Corp hand size normal again")
+    (play-from-hand state :runner "Lewi Guilherme")
+    (take-credits state :runner)
+    (core/lose state :runner :credit 8)
+    (is (= 0 (:credit (get-runner))) "Credits are 0")
+    (take-credits state :corp)
+    (prompt-choice :runner "Yes")
+    (is (= 2 (count (:discard (get-runner)))) "Second Lewi trashed due to no credits")))
 
 (deftest london-library
   ;; Install non-virus programs on London library. Includes #325/409
@@ -965,6 +1078,26 @@
       (is (= 10 (:credit (get-runner))) "10 credits siphoned")
       (is (= 3 (:credit (get-corp))) "Corp lost 5 credits"))))
 
+(deftest off-campus-apartment-simultaneous
+  ;; Off-Campus Apartment - ability shows a simultaneous resolution prompt when appropriate
+  (do-game
+    (new-game (default-corp)
+              (default-runner [(qty "Street Peddler" 1) (qty "Off-Campus Apartment" 1)
+                               (qty "Underworld Contact" 1) (qty "Spy Camera" 6)]))
+    (take-credits state :corp)
+    (starting-hand state :runner ["Street Peddler" "Off-Campus Apartment" "Underworld Contact"])
+    (play-from-hand state :runner "Off-Campus Apartment")
+    (let [oca (get-resource state 0)]
+      (card-ability state :runner oca 0)
+      (prompt-select :runner (find-card "Underworld Contact" (:hand (get-runner))))
+      (is (= 2 (count (:hand (get-runner)))) "Drew a card from OCA")
+      (card-ability state :runner oca 0)
+      (prompt-select :runner (find-card "Street Peddler" (:hand (get-runner))))
+      ;; Make sure the simultaneous-resolution prompt is showing with 2 choices
+      (is (= 2 (-> (get-runner) :prompt first :choices count)) "Simultaneous-resolution prompt is showing")
+      (prompt-choice :runner "Off-Campus Apartment")
+      (is (= 2 (count (:hand (get-runner)))) "Drew a card from OCA"))))
+
 (deftest off-campus-peddler
   ;; Off-Campus Apartment - second ability does not break cards that are hosting others, e.g., Street Peddler
   (do-game
@@ -977,6 +1110,7 @@
     (let [oca (get-resource state 0)]
       (card-ability state :runner oca 0)
       (prompt-select :runner (find-card "Street Peddler" (:hand (get-runner))))
+      (prompt-choice :runner "Street Peddler")
       (let [ped1 (first (:hosted (refresh oca)))]
         (card-ability state :runner ped1 0)
         (prompt-card :runner (-> (get-runner) :prompt first :choices second)) ; choose Street Peddler
@@ -987,6 +1121,34 @@
           (prompt-card :runner (-> (get-runner) :prompt first :choices first)) ; choose Spy Camera
           ;; the fact that we got this far means the bug is fixed
           (is (= 1 (count (get-hardware state))) "Spy Camera installed"))))))
+
+(deftest officer-frank
+  ;; Officer Frank - meat damage to trash 2 from HQ
+  (do-game
+      (new-game (default-corp [(qty "Swordsman" 1) (qty "Hedge Fund" 2)])
+                (default-runner [(qty "Officer Frank" 1) (qty "Skulljack" 1) (qty "Respirocytes" 4)]))
+   (play-from-hand state :corp "Swordsman" "Archives")
+   (take-credits state :corp)
+   (starting-hand state :runner ["Officer Frank" "Skulljack" "Respirocytes" "Respirocytes" "Respirocytes" "Respirocytes"])
+   (play-from-hand state :runner "Officer Frank")
+   (card-ability state :runner (get-resource state 0) 0)
+   (is (= 0 (count (:discard (get-corp)))) "Nothing discarded from HQ")
+   (play-from-hand state :runner "Skulljack")
+   (is (= 3 (count (:hand (get-runner)))) "Took 1 brain damage")
+   (card-ability state :runner (get-resource state 0) 0)
+   (is (= 0 (count (:discard (get-corp)))) "Nothing discarded from HQ")
+   (let [sm (get-ice state :archives 0)]
+     (run-on state :archives)
+     (core/rez state :corp sm)
+     (card-subroutine state :corp sm 0)
+     (run-jack-out state))
+   (is (= 2 (count (:hand (get-runner)))) "Took 1 net damage")
+   (card-ability state :runner (get-resource state 0) 0)
+   (is (= 0 (count (:discard (get-corp)))) "Nothing discarded from HQ")
+   (play-from-hand state :runner "Respirocytes")
+   (is (= 0 (count (:hand (get-runner)))) "Took 1 meat damage")
+   (card-ability state :runner (get-resource state 0) 0)
+   (is (= 2 (count (:discard (get-corp)))) "Two cards trashed from HQ")))
 
 (deftest paige-piper-frantic-coding
   ;; Paige Piper - interaction with Frantic Coding. Issue #2190.
@@ -1454,6 +1616,24 @@
           "Tech Trader was installed")
       (is (= 5 (:credit (get-runner))) "Did not gain 1cr from Tech Trader ability"))))
 
+(deftest-pending street-peddler-trash-while-choosing-card
+  ;; Street Peddler - trashing Street Peddler while choosing which card to
+  ;; discard should dismiss the choice prompt. Issue #587.
+  (do-game
+    (new-game (default-corp)
+              (default-runner [(qty "Street Peddler" 1)
+                               (qty "Gordian Blade" 1)
+                               (qty "Torch" 1)
+                               (qty "Sure Gamble" 2)]))
+    (take-credits state :corp)
+    (starting-hand state :runner ["Street Peddler" "Sure Gamble"])
+    (play-from-hand state :runner "Street Peddler")
+    (let [street-peddler (get-in @state [:runner :rig :resource 0])]
+      (is (= 3 (count (:hosted street-peddler))) "Street Peddler is hosting 3 cards")
+      (card-ability state :runner street-peddler 0)
+      (trash-resource state "Street Peddler")
+      (is (zero? (count (get-in @state [:runner :prompt])))))))
+
 (deftest symmetrical-visage
   ;; Symmetrical Visage - Gain 1 credit the first time you click to draw each turn
   (do-game
@@ -1813,15 +1993,21 @@
       (is (= 0 (get-counters (refresh vbg) :virus)) "Virus Breeding Ground lost 1 counter"))))
 
 (deftest wasteland
-  ;; Wasteland - Gain 1c the first time you trash an installed card each turn
+  ;; Wasteland - Gain 1c the first time you trash an installed card of yours each turn
   (do-game
-    (new-game (default-corp)
+    (new-game (default-corp [(qty "PAD Campaign" 1)])
               (default-runner [(qty "Wasteland" 1) (qty "Faust" 1) (qty "Fall Guy" 4)]))
+    (play-from-hand state :corp "PAD Campaign" "New remote")
     (take-credits state :corp)
-    (core/gain state :runner :click 1)
+    (core/gain state :runner :click 2)
+    (core/gain state :runner :credit 4)
     (core/draw state :runner)
     (play-from-hand state :runner "Faust")
     (play-from-hand state :runner "Wasteland")
+    (is (= 4 (:credit (get-runner))) "Runner has 4 credits")
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "Yes") ; Trash PAD campaign
+    (is (= 0 (:credit (get-runner))) "Gained nothing from Wasteland on corp trash")
     ; trash from hand first which should not trigger #2291
     (let [faust (get-in @state [:runner :rig :program 0])]
       (card-ability state :runner faust 1)

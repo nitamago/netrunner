@@ -50,6 +50,33 @@
       (is (= 2 (count (:discard (get-runner)))) "Runner took 2 net")
       (is (= 1 (count (:scored (get-runner)))) "1 scored agenda"))))
 
+(deftest ben-musashi-rd
+  ;; Ben Musashi - on R&D access
+  (do-game
+    (new-game (default-corp [(qty "Ben Musashi" 1) (qty "House of Knives" 1)])
+              (default-runner))
+    (starting-hand state :corp ["Ben Musashi"])
+    (play-from-hand state :corp "Ben Musashi" "R&D")
+    (take-credits state :corp)
+    (let [bm (get-content state :rd 0)]
+      (core/rez state :corp bm)
+      (run-empty-server state "R&D")
+      ;; runner now chooses which to access.
+      (prompt-choice :runner "Card from deck")
+      ;; prompt should be asking for the 2 net damage cost
+      (is (= "House of Knives" (:title (:card (first (:prompt (get-runner))))))
+          "Prompt to pay 2 net damage")
+      (prompt-choice :runner "No")
+      (is (= 5 (:credit (get-runner))) "Runner did not pay 2 net damage")
+      (is (= 0 (count (:scored (get-runner)))) "No scored agendas")
+      (prompt-choice :runner "Ben Musashi")
+      (prompt-choice :runner "No")
+      (run-empty-server state "R&D")
+      (prompt-choice :runner "Card from deck")
+      (prompt-choice :runner "Yes")
+      (is (= 2 (count (:discard (get-runner)))) "Runner took 2 net")
+      (is (= 1 (count (:scored (get-runner)))) "1 scored agenda"))))
+
 (deftest ben-musashi-trash
   ;; Ben Musashi - pay even when trashed
   (do-game
@@ -418,7 +445,42 @@
         (is (= 2 (count (:discard (get-runner)))) "Runner took 1 net damage")
         (run-on state "HQ")
         (run-jack-out state)
-        (is (= 2 (count (:discard (get-runner)))) "Runner did not take  damage")))))
+        (is (= 2 (count (:discard (get-runner)))) "Runner did not take damage")))))
+
+(deftest helheim-servers
+  ;; Helheim Servers - Full test
+  (do-game
+    (new-game (default-corp [(qty "Helheim Servers" 1) (qty "Gutenberg" 1) (qty "Vanilla" 1)
+                             (qty "Jackson Howard" 1) (qty "Hedge Fund" 1)])
+              (default-runner))
+    (play-from-hand state :corp "Helheim Servers" "R&D")
+    (play-from-hand state :corp "Gutenberg" "R&D")
+    (play-from-hand state :corp "Vanilla" "R&D")
+    (take-credits state :corp)
+    (run-on state "R&D")
+    (is (:run @state))
+    (let [helheim (get-content state :rd 0)
+          gutenberg (get-ice state :rd 0)
+          vanilla (get-ice state :rd 1)]
+      (core/rez state :corp helheim)
+      (core/rez state :corp gutenberg)
+      (core/rez state :corp vanilla)
+      (is (= 6 (:current-strength (refresh gutenberg))))
+      (is (= 0 (:current-strength (refresh vanilla))))
+      (card-ability state :corp helheim 0)
+      (prompt-select :corp (find-card "Jackson Howard" (:hand (get-corp))))
+      (is (= 1 (count (:discard (get-corp)))))
+      (is (= 8 (:current-strength (refresh gutenberg))))
+      (is (= 2 (:current-strength (refresh vanilla))))
+      (card-ability state :corp helheim 0)
+      (prompt-select :corp (find-card "Hedge Fund" (:hand (get-corp))))
+      (is (= 2 (count (:discard (get-corp)))))
+      (is (= 10 (:current-strength (refresh gutenberg))))
+      (is (= 4 (:current-strength (refresh vanilla))))
+      (run-jack-out state)
+      (is (not (:run @state)))
+      (is (= 6 (:current-strength (refresh gutenberg))))
+      (is (= 0 (:current-strength (refresh vanilla)))))))
 
 (deftest hokusai-grid
   ;; Hokusai Grid - Do 1 net damage when run successful on its server
@@ -529,7 +591,7 @@
   ;; Tests that Mumbad Virtual Tour does not force trash with :slow-trash
   (do-game
     (new-game (default-corp [(qty "Mumbad Virtual Tour" 2)])
-              (default-runner [(qty "Imp" 1) (qty "Salsette Slums" 1)]))
+              (default-runner [(qty "Imp" 1)]))
     (play-from-hand state :corp "Mumbad Virtual Tour" "New remote")
     (play-from-hand state :corp "Mumbad Virtual Tour" "New remote")
     (take-credits state :corp)
@@ -546,18 +608,7 @@
           "MVT trashed with Imp")
       ;; Trash Imp to reset :slow-trash flag
       (core/move state :runner (refresh imp) :discard)
-      (is (not (core/any-flag-fn? state :runner :slow-trash true))))
-    (play-from-hand state :runner "Salsette Slums")
-    ;; Reset credits to 5
-    (core/gain state :runner :credit 2)
-    (run-empty-server state "Server 2")
-    ;; Runner not force to trash since Salsette Slums is installed
-    (is (= 5 (:credit (get-runner))) "Runner not forced to trash MVT when Slums installed")
-    (let [slums (get-resource state 0)]
-      (card-ability state :runner slums 0)
-      (is (= "Mumbad Virtual Tour" (:title (first (:rfg (get-corp)))))
-          "MVT removed from game with Salsette Slums")
-      (is (= 0 (:credit (get-runner))) "Runner paid trash cost with Slums"))))
+      (is (not (core/any-flag-fn? state :runner :slow-trash true))))))
 
 (deftest neotokyo-grid
   ;; NeoTokyo Grid - Gain 1c the first time per turn a card in this server gets an advancement
@@ -1065,6 +1116,38 @@
       (prompt-choice :corp "Yes")
       (is (= 2 (count (:discard (get-runner)))) "1 brain damage suffered")
       (is (= 1 (:brain-damage (get-runner)))))))
+
+(deftest tori-hanzo-hokusai
+  ;; Tori Hanzō + Hokusai Grid: Issue #2702
+  (do-game
+    (new-game (default-corp [(qty "Tori Hanzō" 1) (qty "Hokusai Grid" 1)])
+              (default-runner))
+    (core/gain state :corp :credit 5)
+    (play-from-hand state :corp "Hokusai Grid" "Archives")
+    (play-from-hand state :corp "Tori Hanzō" "Archives")
+    (take-credits state :corp)
+    (run-on state "Archives")
+    (let [hg (get-content state :archives 0)
+          tori (get-content state :archives 1)]
+      (core/rez state :corp hg)
+      (core/rez state :corp tori)
+      (run-successful state)
+      (prompt-choice :corp "No") ; Tori prompt to pay 2c to replace 1 net with 1 brain
+      (is (= 1 (count (:discard (get-runner)))) "1 net damage suffered")
+      (prompt-choice :runner "Hokusai Grid")
+      (prompt-choice :runner "No")
+      (prompt-choice :runner "Tori Hanzō")
+      (prompt-choice :runner "No")
+      (is (and (empty (:prompt (get-runner))) (not (:run @state))) "No prompts, run ended")
+      (run-empty-server state "Archives")
+      (prompt-choice :corp "Yes") ; Tori prompt to pay 2c to replace 1 net with 1 brain
+      (is (= 2 (count (:discard (get-runner)))))
+      (is (= 1 (:brain-damage (get-runner))) "1 brain damage suffered")
+      (prompt-choice :runner "Hokusai Grid")
+      (prompt-choice :runner "No")
+      (prompt-choice :runner "Tori Hanzō")
+      (prompt-choice :runner "No")
+      (is (and (empty (:prompt (get-runner))) (not (:run @state))) "No prompts, run ended"))))
 
 (deftest underway-grid
   ;; Underway Grid - prevent expose of cards in server

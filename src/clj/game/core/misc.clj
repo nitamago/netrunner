@@ -1,6 +1,6 @@
 (in-ns 'game.core)
 
-(declare set-prop)
+(declare set-prop get-nested-host get-nested-zone)
 
 (defn get-zones [state]
   (keys (get-in state [:corp :servers])))
@@ -35,6 +35,32 @@
       "New remote" [:servers (keyword (str "remote" (make-rid state)))]
       [:servers (->> (split server #" ") last (str "remote") keyword)])))
 
+(defn same-server? [card1 card2]
+  "True if the two cards are IN or PROTECTING the same server."
+  (let [zone1 (get-nested-zone card1)
+        zone2 (get-nested-zone card2)]
+    (= (second zone1) (second zone2))))
+
+(defn protecting-same-server? [card ice]
+  "True if an ice is protecting the server that the card is in or protecting."
+  (let [zone1 (get-nested-zone card)
+        zone2 (get-nested-zone ice)]
+    (and (= (second zone1) (second zone2))
+         (= :ices (last zone2)))))
+
+(defn in-same-server? [card1 card2]
+  "True if the two cards are installed IN the same server, or hosted on cards IN the same server."
+  (let [zone1 (get-nested-zone card1)
+        zone2 (get-nested-zone card2)]
+    (and (= zone1 zone2)
+         (is-remote? (second zone1)) ; cards in centrals are in the server's root, not in the server.
+         (= :content (last zone1)))))
+
+(defn from-same-server? [upgrade target]
+  "True if the upgrade is in the root of the server that the target is in."
+  (= (central->zone (:zone target))
+     (butlast (get-nested-zone upgrade))))
+
 (defn all-installed
   "Returns a vector of all installed cards for the given side, including those hosted on other cards,
   but not including 'inactive hosting' like Personal Workshop."
@@ -56,6 +82,11 @@
           (filter #(= (:side %) "Corp") installed)
           (let [[card & remaining] unchecked]
             (recur (filter identity (into remaining (:hosted card))) (into installed [card]))))))))
+
+(defn get-all-installed
+  "Returns a list of all installed cards"
+  [state]
+  (concat (all-installed state :corp) (all-installed state :runner)))
 
 (defn all-active
   "Returns a vector of all active cards for the given side. Active cards are either installed, the identity,
@@ -131,7 +162,7 @@
 
 (defn remove-icon
   "Remove the icon associated with the card and target."
-  ([state side card] (remove-icon state side card (get-card state (:icon-target card))))
+  ([state side card] (remove-icon state side card (find-cid (-> card :icon-target :cid) (get-all-installed state))))
   ([state side card target]
    (set-prop state side target :icon nil)
    (set-prop state side card :icon-target nil)))

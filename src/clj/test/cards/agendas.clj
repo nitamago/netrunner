@@ -607,6 +607,21 @@
       (is (= 9 (:credit (get-corp)))
           "Spent 1 credit to advance, gained 3 credits from Oaktown"))))
 
+(deftest obokata-protocol
+  ;; Pay 4 net damage to steal.  Runner win retained on flatline
+  (do-game
+    (new-game (make-deck "Jinteki: Personal Evolution" [(qty "Obokata Protocol" 10)])
+              (default-runner [(qty "Sure Gamble" 4)]))
+    (play-from-hand state :corp "Obokata Protocol" "New remote")
+    (take-credits state :corp)
+    (core/gain state :runner :agenda-point 6)
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "Yes")
+    (is (= 4 (count (:discard (get-runner)))) "Runner paid 4 net damage")
+    (is (= :runner (:winner @state)) "Runner wins")
+    (is (= "Agenda" (:reason @state)) "Win condition reports agenda points")
+    (is (last-log-contains? state "wins the game") "PE did not fire")))
+
 (deftest personality-profiles
   ;; Personality Profiles - Full test
   (do-game
@@ -625,7 +640,7 @@
     (let [chip (get-in @state [:runner :rig :hardware 0])]
       (card-ability state :runner chip 0)
       (prompt-select :runner (find-card "Self-modifying Code" (:discard (get-runner))))
-      (is (last-log-contains? state "Patron")
+      (is (second-last-log-contains? state "Patron")
           "Personality Profiles trashed card name is in log")
       (is (= 3 (count (:discard (get-runner))))))))
 
@@ -911,6 +926,17 @@
       (core/gain state :runner :tag 1)
       (play-from-hand state :corp "Scorched Earth")
       (is (= 0 (count (:hand (get-runner)))) "5 damage dealt to Runner"))))
+
+(deftest the-cleaners-cybernetics
+  ;; The Cleaners - No bonus damage when runner "suffers" damage
+  (do-game
+    (new-game (default-corp [(qty "The Cleaners" 1)])
+              (default-runner [(qty "Respirocytes" 3)]))
+    (play-from-hand state :corp "The Cleaners" "New remote")
+    (score-agenda state :corp (get-content state :remote1 0))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Respirocytes")
+    (is (= 1 (count (:hand (get-runner)))) "Only 1 damage dealt to Runner from Cybernetics")))
 
 (deftest the-future-perfect
   ;; The Future Perfect - cannot steal on failed psi game (if not installed)

@@ -5,6 +5,8 @@
          :user (js->clj js/user :keywordize-keys true)
          :options (merge {:background "lobby-bg"
                           :show-alt-art true
+                          :deckstats "always"
+                          :gamestats "always"
                           :sounds (let [sounds (js->clj (.getItem js/localStorage "sounds"))]
                                     (if (nil? sounds) true (= sounds "true")))
                           :sounds-volume (let [volume (js->clj (.getItem js/localStorage "sounds_volume"))]
@@ -12,6 +14,13 @@
                           :trans-lang (let [lang (js->clj (.getItem js/localStorage "trans-lang"))]
                                            (if (nil? lang) "English" lang))}
                          (:options (js->clj js/user :keywordize-keys true)))
-         :cards [] :sets [] :mwl []
+
+         :cards [] :cards-loaded false
+         :sets [] :mwl [] :cycles []
          :decks [] :decks-loaded false
-         :games [] :gameid nil :messages []}))
+         :stats (:stats (js->clj js/user :keywordize-keys true))
+         :games [] :gameid nil :messages []
+         :channels {:general [] :america [] :europe [] :asia-pacific [] :united-kingdom [] :français []
+                    :español [] :italia [] :português [] :sverige [] :stimhack-league []}
+         }))
+

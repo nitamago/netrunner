@@ -221,6 +221,11 @@
   [state side card]
   (some #(= (:cid %) (:cid card)) (get-in @state [side :scored])))
 
+(defn when-scored?
+  "Checks if the specified card is able to be used for a when-scored text ability"
+  [card]
+  (not (:not-when-scored (card-def card))))
+
 (defn in-deck?
   "Checks if the specified card is in the draw deck."
   [card]
@@ -252,17 +257,35 @@
   [card subtype]
   (has? card :subtype subtype))
 
+(defn can-host?
+  "Checks if the specified card is able to host other cards"
+  [card]
+  (or (not (rezzed? card)) (not (:cannot-host (card-def card)))))
+
 (defn ice? [card]
   (is-type? card "ICE"))
+
+(defn program? [card]
+  (is-type? card "Program"))
+
+(defn hardware? [card]
+  (is-type? card "Hardware"))
+
+(defn resource? [card]
+  (is-type? card "Resource"))
 
 (defn rezzed? [card]
   (:rezzed card))
 
+(defn faceup? [card]
+  (or (:seen card) (:rezzed card)))
+
 (defn installed? [card]
   (or (:installed card) (= :servers (first (:zone card)))))
 
-(defn active? [{:keys [zone] :as card}]
+(defn active?
   "Checks if the card is active and should receive game events/triggers."
+  [{:keys [zone] :as card}]
   (or (is-type? card "Identity")
       (= zone [:current])
       (and (card-is? card :side :corp)
@@ -310,7 +333,7 @@
 (defn can-rez?
   "Checks if the card can be rezzed. Toasts the reason if not."
   ([state side card] (can-rez? state side card nil))
-  ([state side card _]
+  ([state side card {:keys [ignore-unique] :as args}]
    (let [reason (can-rez-reason state side card)
          reason-toast #(do (toast state side %) false)
          title (:title card)]
@@ -323,8 +346,9 @@
        :run-flag false
        :turn-flag false
        ;; Uniqueness
-       :unique (reason-toast (str "Cannot rez a second copy of " title " since it is unique. Please trash the other"
-                                  " copy first"))
+       :unique (or ignore-unique
+                   (reason-toast (str "Cannot rez a second copy of " title " since it is unique. Please trash the other"
+                                      " copy first")))
        ;; Rez requirement
        :req (reason-toast (str "Rez requirements for " title " are not fulfilled"))))))
 

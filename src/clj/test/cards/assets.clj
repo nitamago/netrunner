@@ -115,7 +115,7 @@
       (is (= 1 (count (:discard (get-runner)))) "Runner took 1 net damage"))))
 
 (deftest brain-taping-warehouse
-  ;; Brain-Taping Warehouse - Lower rez cost of bioroid ICE by 1 for each unspent Runner click
+  ;; Brain-Taping Warehouse - Lower rez cost of Bioroid ICE by 1 for each unspent Runner click
   (do-game
     (new-game (default-corp [(qty "Brain-Taping Warehouse" 1) (qty "Ichi 1.0" 1)
                              (qty "Eli 1.0" 1)])
@@ -157,6 +157,7 @@
               (default-runner))
     (play-from-hand state :corp "Chairman Hiro" "New remote")
     (play-from-hand state :corp "Chairman Hiro" "Server 1")
+    (prompt-choice :corp "OK")
     (is (= 1 (count (:discard (get-corp)))) "First Hiro trashed")
     (is (= 0 (:agenda-point (get-runner))) "No points for Runner if trashed by Corp")
     (let [hiro (get-content state :remote1 0)]
@@ -544,6 +545,118 @@
       (core/advance state :corp {:card (last (:hosted (refresh fir)))})
       (is (= 11 (:credit (get-corp))) "Gained 1cr from advancing Oaktown"))))
 
+(deftest gene-splicer-access-unadvanced-no-trash
+  ;; Runner accesses an unadvanced Gene Splicer and doesn't trash
+  ;; No net damage is dealt and Gene Splicer remains installed
+  (do-game
+    (new-game
+      (default-corp [(qty "Gene Splicer" 1)])
+      (default-runner [(qty "Sure Gamble" 3)]))
+    (play-from-hand state :corp "Gene Splicer" "New remote")
+    (take-credits state :corp)
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "No")
+    (is (= 0 (count (:discard (get-runner)))) "Runner took no net damage")
+    (is (= "Gene Splicer" (:title (get-content state :remote1 0))) "Gene Splicer was not trashed")
+    (is (= 5 (:credit (get-runner))) "Runner spent no credits")))
+
+(deftest gene-splicer-access-unadvanced-trash
+  ;; Runner accesses an unadvanced Gene Splicer and trashes it - no net damage is dealt and Gene Splicer is trashed
+  (do-game
+    (new-game
+      (default-corp [(qty "Gene Splicer" 1)])
+      (default-runner [(qty "Sure Gamble" 3)]))
+    (play-from-hand state :corp "Gene Splicer" "New remote")
+    (take-credits state :corp)
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "Yes")
+    (is (= 0 (count (:discard (get-runner)))) "Runner took no net damage")
+    (is (= nil (get-content state :remote1 0)) "Gene Splicer is no longer in remote")
+    (is (= (:title (last (:discard (get-corp)))) "Gene Splicer") "Gene Splicer trashed")
+    (is (= 4 (:credit (get-runner))) "Runner spent 1 credit to trash Gene Splicer")))
+
+(deftest gene-splicer-access-single-advanced-no-trash
+  ;; Runner accesses a single-advanced Gene Splicer and doesn't trash
+  ;; 1 net damage is dealt and Gene Splicer remains installed
+  (do-game
+    (new-game
+      (default-corp [(qty "Gene Splicer" 1)])
+      (default-runner [(qty "Sure Gamble" 3)]))
+    (play-from-hand state :corp "Gene Splicer" "New remote")
+    (core/add-counter state :corp (get-content state :remote1 0) :advancement 1)
+    (take-credits state :corp)
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "No")
+    (is (= 1 (count (:discard (get-runner)))) "Runner took 1 net damage")
+    (is (= "Gene Splicer" (:title (get-content state :remote1 0))) "Gene Splicer was not trashed")
+    (is (= 5 (:credit (get-runner))) "Runner spent no credits")))
+
+(deftest gene-splicer-access-single-advanced-trash
+  ;; Runner accesses a single-advanced Gene Splicer and trashes it
+  ;; 1 net damage is dealt and Gene Splicer is trashed
+  (do-game
+    (new-game
+      (default-corp [(qty "Gene Splicer" 1)])
+      (default-runner [(qty "Sure Gamble" 3)]))
+    (play-from-hand state :corp "Gene Splicer" "New remote")
+    (core/add-counter state :corp (get-content state :remote1 0) :advancement 1)
+    (take-credits state :corp)
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "Yes")
+    (is (= 1 (count (:discard (get-runner)))) "Runner took 1 net damage")
+    (is (= nil (get-content state :remote1 0)) "Gene Splicer is no longer in remote")
+    (is (= (:title (last (:discard (get-corp)))) "Gene Splicer") "Gene Splicer trashed")
+    (is (= 4 (:credit (get-runner))) "Runner spent 1 credit to trash Gene Splicer")))
+
+(deftest gene-splicer-access-double-advanced-no-trash
+  ;; Runner accesses a double-advanced Gene Splicer and doesn't trash
+  ;; 2 net damage is dealt and Gene Splicer remains installed
+  (do-game
+    (new-game
+      (default-corp [(qty "Gene Splicer" 1)])
+      (default-runner [(qty "Sure Gamble" 3)]))
+    (play-from-hand state :corp "Gene Splicer" "New remote")
+    (core/add-counter state :corp (get-content state :remote1 0) :advancement 2)
+    (take-credits state :corp)
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "No")
+    (is (= 2 (count (:discard (get-runner)))) "Runner took 2 net damage")
+    (is (= "Gene Splicer" (:title (get-content state :remote1 0))) "Gene Splicer was not trashed")
+    (is (= 5 (:credit (get-runner))) "Runner spent no credits")))
+
+(deftest gene-splicer-access-double-advanced-trash
+  ;; Runner accesses a double-advanced Gene Splicer and trashes it
+  ;; 2 net damage is dealt and Gene Splicer is trashed
+  (do-game
+    (new-game
+      (default-corp [(qty "Gene Splicer" 1)])
+      (default-runner [(qty "Sure Gamble" 3)]))
+    (play-from-hand state :corp "Gene Splicer" "New remote")
+    (core/add-counter state :corp (get-content state :remote1 0) :advancement 2)
+    (take-credits state :corp)
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "Yes")
+    (is (= 2 (count (:discard (get-runner)))) "Runner took 2 net damage")
+    (is (= nil (get-content state :remote1 0)) "Gene Splicer is no longer in remote")
+    (is (= (:title (last (:discard (get-corp)))) "Gene Splicer") "Gene Splicer trashed")
+    (is (= 4 (:credit (get-runner))) "Runner spent 1 credit to trash Gene Splicer")))
+
+(deftest gene-splicer-agenda-ability
+  ;; Corp triple-advances a Gene Splicer and uses its ability to add to their score area as a 1 point agenda
+  (do-game
+    (new-game
+      (default-corp [(qty "Gene Splicer" 2) (qty "Ice Wall" 3) (qty "Vanilla" 2)])
+      (default-runner [(qty "Sure Gamble" 3)]))
+    (play-from-hand state :corp "Gene Splicer" "New remote")
+    (let [gs (get-content state :remote1 0)]
+      (core/add-counter state :corp gs :advancement 2)
+      (take-credits state :runner)
+      (core/add-counter state :corp (refresh gs) :advancement 1)
+      (core/rez state :corp (refresh gs))
+      (card-ability state :corp (refresh gs) 0)
+      (is (= nil (get-content state :remote1 0)) "Gene Splicer is no longer in remote")
+      (is (= 1 (:agendapoints (get-in @state [:corp :scored 0]))) "Gene Splicer added to Corp score area"))))
+
 (deftest genetics-pavilion
   ;; Genetics Pavilion - Limit Runner to 2 draws per turn, but only during Runner's turn
   (do-game
@@ -648,7 +761,7 @@
       (run-empty-server state "Server 1")
       (prompt-choice :corp "Yes") ; choose to do the optional ability
       (is (= 2 (:tag (get-runner))) "Runner given 2 tags"))))
-	  
+
 (deftest honeyfarm
   ;; lose one credit on access
   (do-game
@@ -701,13 +814,13 @@
       (prompt-choice :corp "2 [Credits]")
       (prompt-choice :runner "0 [Credits]")
       (is (= 3 (:credit (get-corp))) "No credits gained from Hyoubu"))))
-	  
+
 (deftest illegal-arms-factory
   ;; Illegal Arms Factory; draw a card, gain a credit, bad pub when trashed while rezzed
   (do-game
     (new-game (default-corp [(qty "Hedge Fund" 1)
 	                         (qty "Beanstalk Royalties" 1)
-	                         (qty "IPO" 1)							 
+	                         (qty "IPO" 1)
 							 (qty "Illegal Arms Factory" 3)])
               (default-runner))
     (core/gain state :runner :credit 20)
@@ -728,8 +841,7 @@
       (take-credits state :corp)
 	  (run-empty-server state :remote2)
       (prompt-choice :runner "Yes")
-      (is (= 1 (:bad-publicity (get-corp))) "Took a bad pub on rezzed trash")	  
-	)))
+      (is (= 1 (:bad-publicity (get-corp))) "Took a bad pub on rezzed trash"))))
 
 (deftest it-department
   ;; IT Department - Add strength to rezzed ICE until end of turn
@@ -905,6 +1017,34 @@
         (card-ability state :corp yale 0)
         (is (= 15 (:credit (get-corp))) "Gained 2 credits")
         (is (= 1 (count (:discard (get-corp)))) "Mark Yale trashed")))))
+
+(deftest mca-austerity-policy
+  (do-game
+    (new-game
+      (default-corp [(qty "MCA Austerity Policy" 1)])
+      (default-runner))
+    (play-from-hand state :corp "MCA Austerity Policy" "New remote")
+    (let [mca (get-content state :remote1 0)]
+      (core/rez state :corp mca)
+      (card-ability state :corp mca 0)
+      (is (= 1 (get-counters (refresh mca) :power)))
+      ; once per turn only
+      (card-ability state :corp mca 0)
+      (is (= 1 (get-counters (refresh mca) :power)))
+      (take-credits state :corp)
+      ; runner loses a click
+      (is (= 3 (:click (get-runner))))
+      (take-credits state :runner)
+      (card-ability state :corp mca 0)
+      (is (= 2 (get-counters (refresh mca) :power)))
+      (take-credits state :corp)
+      (take-credits state :runner)
+      (card-ability state :corp mca 0)
+      (is (= 3 (get-counters (refresh mca) :power)))
+      ; Fire MCA
+      (is (= 2 (:click (get-corp))))
+      (card-ability state :corp (refresh mca) 1)
+      (is (= 5 (:click (get-corp)))))))
 
 (deftest mental-health-clinic
   ;; Mental Health Clinic - Gain 1 credit when turn begins; Runner max hand size increased by 1
@@ -1205,6 +1345,7 @@
       ; 1 on rez
       (is (= 101 (:credit (get-corp))) "Corp has 101 creds")
       (card-ability state :corp qs 0)
+      (prompt-select :corp (get-in (get-corp) [:scored 0]))
       (prompt-select :corp ch1)
       (prompt-select :corp ch2)
       (prompt-select :corp ch3)
@@ -1228,6 +1369,27 @@
       (core/gain state :runner :tag 1)
       (take-credits state :runner)
       (is (= 13 (:credit (get-corp))) "Gained 2 credits because Runner is tagged"))))
+
+(deftest reconstruction-contract
+  ;; Reconstruction Contract - place advancement token when runner takes meat damage
+  (do-game
+    (new-game (default-corp [(qty "Reconstruction Contract" 1) (qty "Scorched Earth" 1) (qty "Pup" 1)])
+              (default-runner [(qty "Sure Gamble" 3) (qty "Imp" 3)]))
+    (core/gain state :runner :tag 1)
+    (core/gain state :corp :credit 5)
+    (starting-hand state :runner ["Sure Gamble" "Sure Gamble" "Sure Gamble" "Imp" "Imp"])
+    (play-from-hand state :corp "Reconstruction Contract" "New remote")
+    (let [rc (get-content state :remote1 0)]
+      (core/rez state :corp (refresh rc))
+      (play-from-hand state :corp "Scorched Earth")
+      (is (= 4 (count (:discard (get-runner)))))
+      (is (= 1 (:advance-counter (refresh rc))) "Reconstruction Contract has 1 advancement token")
+      (starting-hand state :runner ["Imp" "Imp"])
+      (play-from-hand state :corp "Pup" "HQ")
+      (core/rez state :corp (get-ice state :hq 0))
+      (card-subroutine state :corp (get-ice state :hq 0) 0)
+      (is (= 5 (count (:discard (get-runner)))))
+      (is (= 1 (:advance-counter (refresh rc))) "Reconstruction Contract doesn't get advancement token for net damage"))))
 
 (deftest reversed-accounts
   ;; Reversed Accounts - Trash to make Runner lose 4 credits per advancement
@@ -1655,7 +1817,7 @@
 
     (card-ability state :runner (get-resource state 0) 0)
     (prompt-choice :runner (->> @state :runner :prompt first :choices first))
-    (prompt-choice :runner (first (:scored (get-runner))))
+    (prompt-select :runner (first (:scored (get-runner))))
     (is (= 2 (count (:scored (get-runner)))) "Fan Site removed from Runner score area")
     (is (= -2 (:agenda-point (get-runner))) "Runner has -2 agenda points")
 
@@ -1723,6 +1885,41 @@
       (play-from-hand state :corp "PAD Campaign" "New remote")
       (is (= 5 (:credit (get-corp))) "Gained 1 credit for new server created"))))
 
+(deftest urban-renewal
+  ;; Urban renewal meat damage
+  (do-game
+    (new-game (default-corp [(qty "Urban Renewal" 1)])
+              (default-runner [(qty "Sure Gamble" 3) (qty "Easy Mark" 2)]))
+    ;; Corp turn 1, install and rez urban renewal
+    (play-from-hand state :corp "Urban Renewal" "New remote")
+    (let [ur (get-content state :remote1 0)]
+      (core/rez state :corp (refresh ur))
+      (take-credits state :corp)
+      ;; Runner turn 1, creds
+      (is (= 3 (get-counters (refresh ur) :power)))
+      (take-credits state :runner)
+
+      ;; Corp turn 2
+      (is (= 2 (get-counters (refresh ur) :power)))
+      (take-credits state :corp)
+
+      ;; Runner turn 2
+      (is (= 2 (get-counters (refresh ur) :power)))
+      (take-credits state :runner)
+
+      ;; Corp turn 3
+      (is (= 1 (get-counters (refresh ur) :power)))
+      (take-credits state :corp)
+
+      ;; Runner turn 3
+      (is (= 0 (count (:discard (get-corp)))) "Nothing in Corp trash")
+      (is (= 0 (count (:discard (get-runner)))) "Nothing in Runner trash")
+      (take-credits state :runner)
+
+      ;; Corp turn 4 - damage fires
+      (is (= 1 (count (:discard (get-corp)))) "Urban Renewal got trashed")
+      (is (= 4 (count (:discard (get-runner)))) "Urban Renewal did 4 meat damage"))))
+
 (deftest watchdog
   ;; Watchdog - Reduce rez cost of first ICE per turn by number of Runner tags
   (do-game
@@ -1760,5 +1957,4 @@
         (prompt-choice :corp "Global Food Initiative") ;; into archives
         (prompt-select :corp (first (:discard (get-corp)))) ;; into R&D
         (is (= 0 (count (:discard (get-corp)))) "Only card in discard placed in bottom of R&D")
-        (is (= "Global Food Initiative" (:title (last (:deck (get-corp))))) "GFI last card in deck")
-        ))))
+        (is (= "Global Food Initiative" (:title (last (:deck (get-corp))))) "GFI last card in deck")))))

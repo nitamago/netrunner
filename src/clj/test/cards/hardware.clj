@@ -114,6 +114,30 @@
         (is (not (nil? ds)))
         (is (= (:title ds) "Datasucker"))))))
 
+(deftest clone-chip-dont-install-choices-runner-cant-afford
+  ;; Test clone chip usage - dont show inavalid choices
+  (do-game
+    (new-game (default-corp)
+              (default-runner [(qty "Inti" 1) (qty "Magnum Opus" 1) (qty "Clone Chip" 1)]))
+    (take-credits state :corp)
+    (trash-from-hand state :runner "Inti")
+    (trash-from-hand state :runner "Magnum Opus")
+    (play-from-hand state :runner "Clone Chip")
+    (is (= (get-in @state [:runner :click]) 3) "Runner has 3 clicks left")
+    (let [chip (get-in @state [:runner :rig :hardware 0])]
+      (card-ability state :runner chip 0)
+      (prompt-select :runner (find-card "Magnum Opus" (:discard (get-runner))))
+      (is (nil? (get-in @state [:runner :rig :program 0])) "No program was installed"))
+    (let [chip (get-in @state [:runner :rig :hardware 0])]
+      (is (not (nil? chip)) "Clone Chip is still installed")
+      (is (= (get-in @state [:runner :click]) 3) "Runner has 3 clicks left")
+      (card-ability state :runner chip 0)
+      (prompt-select :runner (find-card "Inti" (:discard (get-runner))))
+      (let [inti (get-in @state [:runner :rig :program 0])]
+        (is (not (nil? inti)) "Program was installed")
+        (is (= (:title inti) "Inti") "Program is Inti")
+        (is (= (get-in @state [:runner :click]) 3) "Runner has 3 clicks left")))))
+
 (deftest comet-event-play
   ;; Comet - Play event without spending a click after first event played
   (do-game
@@ -311,6 +335,21 @@
     (run-empty-server state :hq)
     (prompt-choice :runner "No")
     (is (= 1 (count (:discard (get-corp)))) "2nd HQ card on same turn not trashed by Maw")))
+
+(deftest maw-card-seen
+  ;; Check trashed card is trashed face-up if it's the card that is accessed, issue #2695
+  ;; Also checks Maw auto-trashes on Operation with no trash cost
+  (do-game
+    (new-game (default-corp [(qty "Hedge Fund" 1)])
+              (default-runner [(qty "Maw" 1)]))
+    (take-credits state :corp)
+    (core/gain state :runner :credit 20)
+    (play-from-hand state :runner "Maw")
+    (run-empty-server state :hq)
+    ;; (is (= 0 (count (:discard (get-corp)))) "HQ card not trashed by Maw yet")
+    (prompt-choice :runner "OK")
+    (is (= 1 (count (:discard (get-corp)))) "HQ card trashed by Maw now")
+    (is (:seen (first (:discard (get-corp)))) "Trashed card is registered as seen since it was accessed")))
 
 (deftest maw-hiro
   ;; Maw with Hiro in hand - Hiro not moved to runner scored area on trash decline #2638
@@ -641,6 +680,71 @@
       (prompt-choice :runner "Yes")  ; 6 installed
       (is (count-spy 6) "6 Spy Cameras installed"))))
 
+(deftest respirocytes-multiple
+  ;; Should draw multiple cards when multiple respirocytes are in play
+  (do-game
+   (new-game (default-corp)
+             (default-runner [(qty "Respirocytes" 3) (qty "Sure Gamble" 3)]))
+   (take-credits state :corp)
+   (starting-hand state :runner ["Respirocytes" "Respirocytes" "Respirocytes" "Sure Gamble"])
+   (dotimes [_ 2]
+     (play-from-hand state :runner "Respirocytes"))
+   (is (= 2 (count (:discard (get-runner)))) "2 damage done")
+   (is (= 2 (count (:hand (get-runner)))) "Drew 2 cards")))
+
+(deftest sifr
+  ;; Once per turn drop encountered ICE to zero strenght
+  ;; Also handle archangel then re-install sifr should not break the game #2576
+  (do-game
+    (new-game (default-corp [(qty "Archangel" 1) (qty "IP Block" 1) (qty "Hedge Fund" 1)])
+              (default-runner [(qty "Modded" 1) (qty "Clone Chip" 1) (qty "Şifr" 1) (qty "Parasite" 1)]))
+    (core/gain state :corp :credit 100)
+    (core/gain state :runner :credit 100)
+    (play-from-hand state :corp "Archangel" "HQ")
+    (play-from-hand state :corp "IP Block" "HQ")
+    (take-credits state :corp)
+    (trash-from-hand state :runner "Parasite")
+    (play-from-hand state :runner "Şifr")
+    (is (= 2 (count (:hand (get-runner)))) "Modded and Clone Chip in hand")
+    (let [arch (get-ice state :hq 0)
+          ip (get-ice state :hq 1)
+          sifr (get-hardware state 0)]
+      (core/rez state :corp arch)
+      (core/rez state :corp ip)
+      (is (= 4 (:current-strength (refresh ip))))
+      (run-on state :hq)
+      (is (= 2 (:position (:run @state))))
+      (card-ability state :runner sifr 0)
+      (is (= 0 (:current-strength (refresh ip))))
+      (run-continue state)
+      (is (= 1 (:position (:run @state))))
+      (is (= 2 (count (:hand (get-runner))))) ; pre archangel
+      (card-subroutine state :corp arch 0) ; fire archangel
+      (is (not (empty? (:prompt (get-corp)))) "Archangel trace prompt - corp")
+      (prompt-choice :corp 0)
+      (is (not (empty? (:prompt (get-runner)))) "Archangel trace prompt - runner")
+      (prompt-choice :runner 0)
+      (prompt-select :corp sifr)
+      (is (= 3 (count (:hand (get-runner))))) ; sifr got lifted to hand
+      (run-jack-out state)
+      (is (= 4 (:current-strength (refresh ip))) "IP Block back to standard strength")
+      (play-from-hand state :runner "Modded")
+      (is (not (empty? (:prompt (get-runner)))) "Modded choice prompt exists")
+      (prompt-select :runner (find-card "Şifr" (:hand (get-runner))))
+      (is (= 4 (:current-strength (refresh ip))) "IP Block back to standard strength")
+      (play-from-hand state :runner "Clone Chip")
+      (take-credits state :runner)
+      (take-credits state :corp 4)
+      (let [chip (get-hardware state 1)]
+        (is (nil? (:sifr-target (refresh sifr))) "Sifr cleaned up on leave play")
+        (is (= 0 (count (:discard (get-corp)))) "No Corp cards trashed")
+        (card-ability state :runner chip 0)
+        (prompt-select :runner (find-card "Parasite" (:discard (get-runner))))
+        (let [para (get-program state 0)]
+          (prompt-select :runner ip)
+          (is (= 0 (count (:discard (get-corp)))) "IP Block Not Trashed")
+          (is (= 1 (count (:hosted (refresh ip)))) "Parasite is hosted"))))))
+
 (deftest spinal-modem
   ;; Spinal Modem - +1 MU, 2 recurring credits, take 1 brain damage on successful trace during run
   (do-game
@@ -705,6 +809,27 @@
         (is (= "The top card of R&D is Hedge Fund" topcard)))
       (is (= 1 (count (:discard (get-runner))))))))
 
+(deftest the-gauntlet-not-with-gang-sign
+  ;; Access additional cards on run on HQ, not with Gang Sign
+  ;; Issue #2749
+  (do-game
+    (new-game (default-corp [(qty "Hostile Takeover" 1)
+                             (qty "Hedge Fund" 3)])
+              (default-runner [(qty "The Gauntlet" 1)
+                               (qty "Gang Sign" 1)]))
+    (take-credits state :corp)
+    (core/gain state :runner :credit 5)
+    (play-from-hand state :runner "Gang Sign")
+    (play-from-hand state :runner "The Gauntlet")
+    (take-credits state :runner)
+    (play-from-hand state :corp "Hostile Takeover" "New remote")
+    (score-agenda state :corp (get-content state :remote1 0))
+    ;; Gang Sign should trigger, without The Gauntlet pop-up
+    (let [gs (get-resource state 0)]
+      (prompt-is-card? :runner gs))
+    ;; This will throw error if The Gauntlet triggers.
+    (prompt-choice :runner "Card from hand")))
+
 (deftest the-personal-touch
   ;; The Personal Touch - Give +1 strength to an icebreaker
   (do-game
@@ -740,7 +865,6 @@
     (prompt-select :runner (find-card "Titanium Ribs" (:hand (get-runner))))
     (prompt-select :runner (find-card "Kati Jones" (:hand (get-runner))))
     (is (empty? (:prompt (get-runner))) "Fall Guy didn't try to prevent trashing of Kati")
-
     (is (= 2 (count (:discard (get-runner)))) "2 cards trashed for Ribs installation meat damage")
     (run-on state "HQ")
     (let [pup (get-ice state :hq 0)]
@@ -824,3 +948,22 @@
     (take-credits state :corp)
     (is (not= (count (:hand (get-corp))) (core/hand-size state :corp)) "Corp hand below max")
     (is (= 1 (count (:hand (get-runner)))) "No card drawn")))
+
+(deftest zamba
+  ;; Zamba - Whenever corp card is exposed you may gain 1 credit
+  (do-game
+   (new-game (default-corp [(qty "Ice Wall" 1)])
+             (default-runner [(qty "Zamba" 1) (qty "Infiltration" 2)]))
+   (play-from-hand state :corp "Ice Wall" "Archives")
+   (take-credits state :corp)
+   (play-from-hand state :runner "Zamba")
+   (is (= 6 (:memory (get-runner))) "Gain 2 memory")
+   (is (= 1 (:credit (get-runner))) "At 1 credit")
+   (play-from-hand state :runner "Infiltration")
+   (prompt-choice :runner "Expose a card")
+   (prompt-select :runner (get-ice state :archives 0))
+   (is (= 2 (:credit (get-runner))) "Gained 1 credit from exposing")
+   (play-from-hand state :runner "Infiltration")
+   (prompt-choice :runner "Expose a card")
+   (prompt-select :runner (get-ice state :archives 0))
+   (is (= 3 (:credit (get-runner))) "Gained 1 more credit from exposing")))

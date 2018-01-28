@@ -3,23 +3,29 @@
   (:require [om.core :as om :include-macros true]
             [sablono.core :as sab :include-macros true]
             [cljs.core.async :refer [chan put! <! timeout] :as async]
-            [clojure.string :refer [split split-lines join escape]]
+            [clojure.string :refer [split split-lines join escape] :as s]
             [netrunner.appstate :refer [app-state]]
             [netrunner.auth :refer [authenticated] :as auth]
-            [netrunner.cardbrowser :refer [cards-channel image-url card-view] :as cb]
+            [netrunner.cardbrowser :refer [cards-channel image-url card-view show-alt-art? filter-title expand-alts] :as cb]
             [netrunner.account :refer [load-alt-arts]]
-            [netrunner.ajax :refer [POST GET]]))
+            [netrunner.ajax :refer [POST GET]]
+            [goog.string :as gstring]
+            [goog.string.format]))
 
 (def select-channel (chan))
 (def zoom-channel (chan))
 (def INFINITY 2147483647)
 
+(defn num->percent
+  "Converts an input number to a percent of the second input number for display"
+  [num1 num2]
+  (if (zero? num2)
+    "0"
+    (gstring/format "%.0f" (* 100 (float (/ num1 num2))))))
+
 (defn identical-cards? [cards]
   (let [name (:title (first cards))]
     (every? #(= (:title %) name) cards)))
-
-(defn found? [query cards]
-  (some #(if (= (.toLowerCase (:title %)) query) %) cards))
 
 (defn is-draft-id?
   "Check if the specified id is a draft identity"
@@ -37,44 +43,6 @@
   [identity]
   (if (is-draft-id? identity) INFINITY (:influencelimit identity)))
 
-(defn not-alternate [card]
-  (if (= (:setname card) "Alternates")
-    (some #(and (not= (:setname %) "Alternates")
-                (= (:title %) (:title card))
-                %)
-          (:cards @app-state))
-    card))
-
-(defn- check-mwl-map
-  "Check if card is in specified mwl map"
-  [mwl-map card]
-  (->> card
-       not-alternate
-       :code
-       keyword
-       (contains? (:cards mwl-map))))
-
-(defn- get-mwl-value
-  "Get universal influence for card"
-  ([card] (get-mwl-value (first (filter :active (:mwl @app-state))) card))
-  ([mwl-map card]
-   (->> card
-        not-alternate
-        :code
-        keyword
-        (get (:cards mwl-map)))))
-
-(defn mostwanted?
-  "Returns true if card is on Most Wanted NAPD list."
-  ([card]
-   (let [mwl-list (:mwl @app-state)
-         active-mwl (first (filter :active mwl-list))]
-     (check-mwl-map active-mwl card)))
-  ([mwl-code card]
-   (let [mwl-list (:mwl @app-state)
-         mwl-map (first (filter #(= mwl-code (:code %)) mwl-list))]
-     (check-mwl-map mwl-map card))))
-
 (defn card-count [cards]
   (reduce #(+ %1 (:qty %2)) 0 cards))
 
@@ -82,54 +50,111 @@
   (or (= (:faction card) (:faction identity))
       (= 0 (:factioncost card)) (= INFINITY (id-inf-limit identity))))
 
-(defn search [query cards]
-  (filter #(if (= (.indexOf (.toLowerCase (:title %)) query) -1) false true) cards))
+(defn take-best-card
+  "Returns a non-rotated card from the list of cards or a random rotated card from the list"
+  [cards]
+  (let [non-rotated (filter #(not (:rotated %)) cards)]
+    (if (not-empty non-rotated)
+      (first non-rotated)
+      (first cards))))
 
-(defn alt-art?
-  "Removes alt-art cards from the search if user is not :special"
-  [card]
-  (or (get-in @app-state [:user :special])
-      (not= "Alternates" (:setname card))))
+(defn filter-exact-title [query cards]
+  (let [lcquery (.toLowerCase query)]
+    (filter #(or (= (.toLowerCase (:title %)) lcquery)
+                 (= (:normalizedtitle %) lcquery))
+            cards)))
 
 (defn lookup
   "Lookup the card title (query) looking at all cards on specified side"
-  [side query]
-  (let [q (.toLowerCase query)
-        cards (filter #(and (= (:side %) side) (alt-art? %))
-                      (:cards @app-state))]
-    (if-let [card (some #(when (= (-> % :title .toLowerCase) q) %) cards)]
-      card
-      (loop [i 2 matches cards]
-        (let [subquery (subs q 0 i)]
-         (cond (zero? (count matches)) query
-               (or (= (count matches) 1) (identical-cards? matches)) (first matches)
-               (found? subquery matches) (found? subquery matches)
-               (<= i (count query)) (recur (inc i) (search subquery matches))
-               :else query))))))
+  [side card]
+  (let [q (.toLowerCase (:title card))
+        id (:id card)
+        cards (filter #(= (:side %) side)
+                      (:cards @app-state))
+        exact-matches (filter-exact-title q cards)]
+    (cond (and id
+               (first (filter #(= id (:code %)) cards)))
+          (first (filter #(= id (:code %)) cards))
+          (not-empty exact-matches) (take-best-card exact-matches)
+          :else
+          (loop [i 2 matches cards]
+            (let [subquery (subs q 0 i)]
+              (cond (zero? (count matches)) card
+                    (or (= (count matches) 1) (identical-cards? matches)) (take-best-card matches)
+                    (<= i (count (:title card))) (recur (inc i) (filter-title subquery matches))
+                    :else card))))))
+
+(defn- build-identity-name
+  [title setname art]
+  (let [set-title (if setname (str title " (" setname ")") title)]
+    (if art
+      (str set-title " [" art "]")
+      set-title)))
 
 (defn parse-identity
-  "Parse an id to the corresponding card map - only care about side and name for now"
-  [{:keys [side title]}]
-  (lookup side title))
+  "Parse an id to the corresponding card map"
+  [{:keys [side title art setname]}]
+  (let [card (lookup side {:title title})]
+    (assoc card :art art :display-name (build-identity-name title setname art))))
 
-(defn parse-line [side line]
-  (let [tokens (split line " ")
-        qty (js/parseInt (first tokens))
-        cardname (join " " (rest tokens))]
-    (when-not (js/isNaN qty)
-      {:qty (min qty 6) :card (lookup side cardname)})))
+(defn add-params-to-card
+  "Add art and id parameters to a card hash"
+  [card id art]
+  (-> card
+    (assoc :art art)
+    (assoc :id id)))
+
+(defn- clean-param
+  "Parse card parameter key value pairs from a string"
+  [param]
+  (if (and param
+           (= 2 (count param)))
+    (let [[k v] (map s/trim param)
+          allowed-keys '("id" "art")]
+      (if (some #{k} allowed-keys)
+        [(keyword k) v]
+        nil))
+    nil))
+
+(defn- param-reducer
+  [acc param]
+  (if param
+    (assoc acc (first param) (second param))
+    acc))
+
+(defn- add-params
+  "Parse a string of parameters and add them to a map"
+  [result params-str]
+  (if params-str
+    (let [params-groups (split params-str #"\,")
+          params-all (map #(split % #":") params-groups)
+          params-clean (map #(clean-param %) params-all)]
+      (reduce param-reducer result params-clean))
+    result))
+
+(defn parse-line
+  "Parse a single line of a deck string"
+  [line]
+  (let [clean (s/trim line)
+        [_ qty-str card-name _ card-params] (re-matches #"(\d+)[^\s]*\s+([^\[]+)(\[(.*)\])?" clean)]
+    (if (and qty-str
+             (not (js/isNaN (js/parseInt qty-str)))
+             card-name)
+      (let [result (assoc {} :qty (js/parseInt qty-str) :card (s/trim card-name))]
+        (add-params result card-params))
+      nil)))
+
+(defn- line-reducer
+  "Reducer function to parse lines in a deck string"
+  [acc line]
+  (if-let [card (parse-line line)]
+    (conj acc card)
+    acc))
 
 (defn deck-string->list
   "Turn a raw deck string into a list of {:qty :title}"
   [deck-string]
-  (letfn [(line-reducer [coll line]
-            (let [[qty & cardname] (split line " ")
-                  qty (js/parseInt qty)
-                  title (join " " cardname)]
-              (if (js/isNaN qty)
-                coll
-                (conj coll {:qty qty :card title}))))]
-          (reduce line-reducer [] (split-lines deck-string))))
+  (reduce line-reducer [] (split-lines deck-string)))
 
 (defn collate-deck
   "Takes a list of {:qty n :card title} and returns list of unique titles and summed n for same title"
@@ -145,10 +170,9 @@
 (defn lookup-deck
   "Takes a list of {:qty n :card title} and looks up each title and replaces it with the corresponding cardmap"
   [side card-list]
-  (let [card-list (collate-deck card-list)
-        card-lookup (partial lookup side)]
+  (let [card-list (collate-deck card-list)]
     ;; lookup each card and replace title with cardmap
-    (map #(update % :card card-lookup) card-list)))
+    (map #(assoc % :card (lookup side (assoc % :title (:card %)))) card-list)))
 
 (defn parse-deck-string
   "Parses a string containing the decklist and returns a list of lines {:qty :card}"
@@ -197,36 +221,45 @@
                             (cons x (step more (conj seen k))))))))]
     (step coll #{})))
 
-(defn side-identities [side]
-  (->> (:cards @app-state)
-       (filter #(and (= (:side %) side)
-                     (= (:type %) "Identity")
-                     (alt-art? %)))
-       (distinct-by :title)))
+(defn- add-deck-name
+  [all-titles card]
+  (let [card-title (:title card)
+        indexes (keep-indexed #(if (= %2 card-title) %1 nil) all-titles)
+        dups (> (count indexes) 1)]
+    (if dups
+      (assoc card :display-name (str (:title card) " (" (:setname card) ")"))
+      (assoc card :display-name (:title card)))))
 
-(defn get-card [title]
-  (some #(when (and (= (:title %) title) (alt-art? %)) %)
-        (:cards @app-state)))
+
+(defn side-identities [side]
+  (let [cards
+        (->> (:cards @app-state)
+          (filter #(and (= (:side %) side)
+                        (= (:type %) "Identity")))
+          (filter #(not (contains? %1 :replaced_by))))
+        all-titles (map :title cards)
+        add-deck (partial add-deck-name all-titles)]
+    (->> cards
+      (map add-deck)
+      (reduce expand-alts []))))
+
+(defn- insert-params
+  "Add card parameters into the string representation"
+  [card]
+  (let [id (:id card)
+        art (:art card)]
+    (if (or id art)
+      (str " ["
+           (when id (str "id: " id))
+           (when (and id art) ", ")
+           (when art (str "art: " art))
+           "]")
+      "")))
 
 (defn deck->str [owner]
   (let [cards (om/get-state owner [:deck :cards])
-        str (reduce #(str %1 (:qty %2) " " (get-in %2 [:card :title]) "\n") "" cards)]
+        str (reduce #(str %1 (:qty %2) " " (get-in %2 [:card :title]) (insert-params %2) "\n") "" cards)]
     (om/set-state! owner :deck-edit str)))
-
-(defn mostwantedval
-  "Returns a map of faction keywords to number of MWL universal influence spent from the faction's cards."
-  [deck]
-  (let [cards (:cards deck)
-        mwlhelper (fn [currmap line]
-                    (let [card (:card line)
-                          qty (if (is-prof-prog? deck card)
-                                (- (:qty line) 1)
-                                (:qty line))]
-                      (if (mostwanted? card)
-                        (update-in currmap [(keyword (faction-label card))]
-                                   (fnil (fn [curmwl] (+ curmwl (* (get-mwl-value card) qty))) 0))
-                        currmap)))]
-    (reduce mwlhelper {} cards)))
 
 ;;; Helpers for Alliance cards
 (defn is-alliance?
@@ -264,7 +297,7 @@
     "10019"                                                 ; Museum of History
     (<= 50 (card-count cards))
     "10038"                                                 ; PAD Factory
-    (= 3 (card-count (filter #(= "01109" (:code (:card %))) cards)))
+    (= 3 (card-count (filter #(= "PAD Campaign" (:title (:card %))) cards)))
     "10076"                                                 ; Mumbad Virtual Tour
     (<= 7 (card-count (filter #(= "Asset" (:type (:card %))) cards)))
     ;; Not an alliance card
@@ -307,11 +340,6 @@
               (update infmap faction #(+ (or % 0) inf-cost))))]
     (reduce infhelper {} (:cards deck))))
 
-(defn universalinf-count
-  "Returns total number universal influence in a deck."
-  [deck]
-  (apply + (vals (mostwantedval deck))))
-
 (defn influence-count
   "Returns sum of influence count used by a deck."
   [deck]
@@ -349,8 +377,10 @@
   "Returns false if the card comes from a spoiled set or is out of competitive rotation."
   [sets card]
   (let [card-set (:setname card)
+        rotated (:rotated card)
         date (some #(when (= (:name %) card-set) (:available %)) sets)]
-    (and (not= date "")
+    (and (not rotated)
+         (not= date "")
          (< date (.toJSON (js/Date.))))))
 
 ;; 1.1.1.1 and Cache Refresh validation
@@ -381,7 +411,7 @@
   "Returns true if deck is valid under Cache Refresh rules."
   [sets deck]
   (let [over-one-core (cards-over-one-core deck)
-        valid-sets (concat ["Core Set" "Terminal Directive"] (sets-in-two-newest-cycles sets))
+        valid-sets (concat ["Revised Core Set" "Terminal Directive"] (sets-in-two-newest-cycles sets))
         deck-with-id (assoc deck :cards (cons {:card (:identity deck) } (:cards deck))) ;identity should also be from valid sets
         restricted-sets (group-cards-from-restricted-sets sets valid-sets deck-with-id)
         restricted-bigboxes (rest (:bigboxes restricted-sets)) ;one big box is fine
@@ -411,10 +441,51 @@
         })]
     { :legal (not-any? val reasons) :reason (join "\n" (filter identity (vals reasons))) }))
 
-(defn mwl-legal?
-  "Returns true if the deck's influence fits within NAPD MWL universal influence restrictions."
+(defn banned-cards
+  "Returns a list of card codes that are on the MWL banned list"
+  []
+  (->> (:cards (:mwl @app-state))
+    (filter (fn [[k v]] (contains? v :deck_limit)))
+    (map key)))
+
+(defn banned?
+  "Returns true if the card is on the MWL banned list"
+  [card]
+  (let [banned (banned-cards)]
+    (not= -1 (.indexOf banned (keyword (:code card))))))
+
+(defn contains-banned-cards
+  "Returns true if any of the cards are in the MWL banned list"
   [deck]
-  (<= (+ (universalinf-count deck) (influence-count deck)) (id-inf-limit (:identity deck))))
+  (some #(banned? (:card %)) (:cards deck)))
+
+(defn restricted-cards
+  "Returns a list of card codes that are on the MWL restricted list"
+  []
+  (->> (:cards (:mwl @app-state))
+    (filter (fn [[k v]] (contains? v :is_restricted)))
+    (map key)))
+
+(defn restricted?
+  "Returns true if the card is on the MWL restricted list"
+  [card]
+  (let [restricted (restricted-cards)]
+    (not= -1 (.indexOf restricted (keyword (:code card))))))
+
+(defn restricted-card-count
+  "Returns the number of *types* of restricted cards"
+  [deck]
+  (->> (:cards deck)
+    (filter (fn [c] (restricted? (:card c))))
+    (map (fn [c] (:title (:card c))))
+    (distinct)
+    (count)))
+
+(defn mwl-legal?
+  "Returns true if the deck does not contain banned cards or more than one type of restricted card"
+  [deck]
+  (and (not (contains-banned-cards deck))
+       (<= (restricted-card-count deck) 1)))
 
 (defn only-in-rotation?
   "Returns true if the deck doesn't contain any cards outside of current rotation."
@@ -423,12 +494,14 @@
        (released? sets (:identity deck))))
 
 (defn edit-deck [owner]
-  (om/set-state! owner :edit true)
-  (deck->str owner)
-  (-> owner (om/get-node "viewport") js/$ (.addClass "edit"))
-  (try (js/ga "send" "event" "deckbuilder" "edit") (catch js/Error e))
-  (go (<! (timeout 500))
-      (-> owner (om/get-node "deckname") js/$ .select)))
+  (let [deck (om/get-state owner :deck)]
+    (om/set-state! owner :old-deck deck)
+    (om/set-state! owner :edit true)
+    (deck->str owner)
+    (-> owner (om/get-node "viewport") js/$ (.addClass "edit"))
+    (try (js/ga "send" "event" "deckbuilder" "edit") (catch js/Error e))
+    (go (<! (timeout 500))
+        (-> owner (om/get-node "deckname") js/$ .select))))
 
 (defn end-edit [owner]
   (om/set-state! owner :edit false)
@@ -441,6 +514,13 @@
         cards (parse-deck-string side text)]
     (om/set-state! owner :deck-edit text)
     (om/set-state! owner [:deck :cards] cards)))
+
+(defn cancel-edit [owner]
+  (end-edit owner)
+  (go (let [deck (om/get-state owner :old-deck)
+            all-decks (process-decks (:json (<! (GET (str "/data/decks")))))]
+        (load-decks all-decks)
+        (put! select-channel deck))))
 
 (defn delete-deck [owner]
   (om/set-state! owner :delete true)
@@ -473,12 +553,21 @@
    (fn [user]
      (end-edit owner)
      (let [deck (assoc (om/get-state owner :deck) :date (.toJSON (js/Date.)))
+           deck (dissoc deck :stats)
            decks (remove #(= (:_id deck) (:_id %)) (:decks @app-state))
            cards (for [card (:cards deck) :when (get-in card [:card :title])]
-                   {:qty (:qty card) :card (get-in card [:card :title])})
-           ;; only include keys that are relevant, currently title and side, includes code for future-proofing
+                   (let [card-map {:qty (:qty card) :card (get-in card [:card :title])}
+                         card-id (if (contains? card :id) (conj card-map {:id (:id card)}) card-map)]
+                     (if (contains? card :art)
+                       (conj card-id {:art (:art card)})
+                       card-id)))
+           ;; only include keys that are relevant
            identity (select-keys (:identity deck) [:title :side :code])
-           data (assoc deck :cards cards :identity identity)]
+           identity-art (if (contains? (:identity deck) :art)
+                          (do
+                            (conj identity {:art (:art (:identity deck))}))
+                          identity)
+           data (assoc deck :cards cards :identity identity-art)]
        (try (js/ga "send" "event" "deckbuilder" "save") (catch js/Error e))
        (go (let [new-id (get-in (<! (POST "/data/decks/" data :json)) [:json :_id])
                  new-deck (if (:_id deck) deck (assoc deck :_id new-id))
@@ -487,14 +576,41 @@
              (om/set-state! owner :deck new-deck)
              (load-decks all-decks)))))))
 
+(defn clear-deck-stats [cursor owner]
+  (authenticated
+    (fn [user]
+      (let [deck (dissoc (om/get-state owner :deck) :stats)
+            decks (remove #(= (:_id deck) (:_id %)) (:decks @app-state))
+            cards (for [card (:cards deck) :when (get-in card [:card :title])]
+                    {:qty (:qty card) :card (get-in card [:card :title])})
+            ;; only include keys that are relevant, currently title and side, includes code for future-proofing
+            identity (select-keys (:identity deck) [:title :side :code])
+            data (assoc deck :cards cards :identity identity)]
+        (try (js/ga "send" "event" "deckbuilder" "cleardeckstats") (catch js/Error e))
+        (go (let [result (<! (POST "/data/decks/clearstats" data :json))]
+              (om/update! cursor :decks (conj decks deck))
+              (om/set-state! owner :deck deck)
+              (.focus deck)))))))
+
 (defn html-escape [st]
   (escape st {\< "&lt;" \> "&gt;" \& "&amp;" \" "#034;"}))
 
 ;; Dot definitions
-(def zws "&#8203;")                                         ; zero-width space for wrapping dots
-(def influence-dot (str "&#9679;" zws))                     ; normal influence dot
-(def mwl-dot (str "&#9733;" zws))                           ; influence penalty from MWL
-(def alliance-dot (str "&#9675;" zws))                      ; alliance free-inf dot
+(def zws "\u200B")                                          ; zero-width space for wrapping dots
+(def influence-dot (str "●" zws))                           ; normal influence dot
+(def banned-dot (str "✘" zws))                              ; on the banned list
+(def restricted-dot (str "🦄" zws))                         ; on the restricted list
+(def alliance-dot (str "○" zws))                            ; alliance free-inf dot
+(def rotated-dot (str "↻" zws))                             ; on the rotation list
+
+(def banned-span
+  [:span.invalid {:title "Removed"} " " banned-dot])
+
+(def restricted-span
+  [:span {:title "Restricted"} " " restricted-dot])
+
+(def rotated-span
+  [:span.casual {:title "Rotated"} " " rotated-dot])
 
 (defn- make-dots
   "Returns string of specified dots and number. Uses number for n > 20"
@@ -508,11 +624,6 @@
   [num]
   (make-dots influence-dot num))
 
-(defn restricted-dots
-  "Returns a string with UTF-8 empty circles representing MWL restricted cards."
-  [num]
-  (make-dots mwl-dot num))
-
 (defn alliance-dots
   [num]
   (make-dots alliance-dot num))
@@ -521,65 +632,86 @@
   "Make a hiccup-ready vector for the specified dot and cost-map (influence or mwl)"
   [dot cost-map]
   (for [factionkey (sort (keys cost-map))]
-    [:span.influence
-     {:class (name factionkey)
-      :dangerouslySetInnerHTML #js {:__html (make-dots dot (factionkey cost-map))}}]))
+    [:span.influence {:class (name factionkey)} (make-dots dot (factionkey cost-map))]))
 
-(defn influence-html
+(defn card-influence-html
+  "Returns hiccup-ready vector with dots for influence as well as restricted / rotated / banned symbols"
+  [card qty in-faction allied?]
+  (let [influence (* (:factioncost card) qty)
+        banned (banned? card)
+        restricted (restricted? card)
+        rotated (:rotated card)]
+    (list " "
+          (when (and (not banned) (not in-faction))
+            [:span.influence {:class (faction-label card)}
+             (if allied?
+               (alliance-dots influence)
+               (influence-dots influence))])
+          (if banned
+            banned-span
+            [:span
+             (when restricted restricted-span)
+             (when rotated rotated-span)]))))
+
+(defn deck-influence-html
   "Returns hiccup-ready vector with dots colored appropriately to deck's influence."
   [deck]
   (dots-html influence-dot (influence-map deck)))
 
-(defn restricted-html
-  "Returns hiccup-ready vector with dots colored appropriately to deck's MWL restricted cards."
-  [deck]
-  (dots-html mwl-dot (mostwantedval deck)))
+(defn- deck-status
+  [mwl-legal valid in-rotation]
+  (cond
+    (and mwl-legal valid in-rotation) "legal"
+    valid "casual"
+    :else "invalid"))
 
 (defn deck-status-label
   [sets deck]
-  (cond
-    (and (mwl-legal? deck) (valid? deck) (only-in-rotation? sets deck)) "legal"
-    (valid? deck) "casual"
-    :else "invalid"))
+  (let [valid (valid? deck)
+        mwl (mwl-legal? deck)
+        rotation (only-in-rotation? sets deck)]
+    (deck-status mwl valid rotation)))
+
+(defn deck-status-span-impl [sets deck tooltip? onesies-details?]
+   (let [valid (valid? deck)
+         mwl (mwl-legal? deck)
+         rotation (only-in-rotation? sets deck)
+         status (deck-status mwl valid rotation)
+         message (case status
+                   "legal" "Tournament legal"
+                   "casual" "Casual play only"
+                   "invalid" "Invalid")]
+     [:span.deck-status.shift-tooltip {:class status} message
+      (when tooltip?
+        (let [cache-refresh (cache-refresh-legal sets deck)
+              onesies (onesies-legal sets deck)]
+          [:div.status-tooltip.blue-shade
+           [:div {:class (if valid "legal" "invalid")}
+            [:span.tick (if valid "✔" "✘")] "Basic deckbuilding rules"]
+           [:div {:class (if mwl "legal" "invalid")}
+            [:span.tick (if mwl "✔" "✘")] (:name (:mwl @app-state))]
+           [:div {:class (if rotation "legal" "invalid")}
+            [:span.tick (if rotation "✔" "✘")] "Only released cards"]
+           [:div {:class (if (:legal cache-refresh) "legal" "invalid") :title (if onesies-details? (:reason cache-refresh)) }
+            [:span.tick (if (:legal cache-refresh) "✔" "✘")] "Cache Refresh compliant"]
+           [:div {:class (if (:legal onesies) "legal" "invalid") :title (if onesies-details? (:reason onesies))}
+            [:span.tick (if (:legal onesies) "✔" "✘") ] "1.1.1.1 format compliant"]]))]))
+
+(def deck-status-span-memoize (memoize deck-status-span-impl))
 
 (defn deck-status-span
   "Returns a [:span] with standardized message and colors depending on the deck validity."
   ([sets deck] (deck-status-span sets deck false))
   ([sets deck tooltip?] (deck-status-span sets deck tooltip? false))
   ([sets deck tooltip? onesies-details?]
-   (let [status (deck-status-label sets deck)
-         valid (valid? deck)
-         mwl (mwl-legal? deck)
-         rotation (only-in-rotation? sets deck)
-         cache-refresh (cache-refresh-legal sets deck)
-         onesies (onesies-legal sets deck)
-         message (case status
-                   "legal" "Tournament legal"
-                   "casual" "Casual play only"
-                   "invalid" "Invalid")]
-     [:span.deck-status {:class status} message
-      (when tooltip?
-        [:div.status-tooltip.blue-shade
-         [:div {:class (if valid "legal" "invalid")}
-          [:span.tick (if valid "✔" "✘")] "Basic deckbuilding rules"]
-         [:div {:class (if mwl "legal" "invalid")}
-          [:span.tick (if mwl "✔" "✘")] "NAPD Most Wanted List"]
-         [:div {:class (if rotation "legal" "invalid")}
-          [:span.tick (if rotation "✔" "✘")] "Only released cards"]
-         [:div {:class (if (:legal cache-refresh) "legal" "invalid") :title (if onesies-details? (:reason cache-refresh)) }
-          [:span.tick (if (:legal cache-refresh) "✔" "✘")] "Cache Refresh compliant"]
-         [:div {:class (if (:legal onesies) "legal" "invalid") :title (if onesies-details? (:reason onesies))}
-          [:span.tick (if (:legal onesies) "✔" "✘") ] "1.1.1.1 format compliant"]])])))
+   (deck-status-span-memoize sets deck tooltip? onesies-details?)))
 
 (defn match [identity query]
-  (if (empty? query)
-    []
-    (let [cards (->> (:cards @app-state)
-                     (filter #(and (allowed? % identity)
-                                   (not= "Special" (:setname %))
-                                   (alt-art? %)))
-                     (distinct-by :title))]
-      (take 10 (filter #(not= (.indexOf (.toLowerCase (:title %)) (.toLowerCase query)) -1) cards)))))
+  (->> (:cards @app-state)
+    (filter #(allowed? % identity))
+    (distinct-by :title)
+    (filter-title query)
+    (take 10)))
 
 (defn handle-keydown [owner event]
   (let [selected (om/get-state owner :selected)
@@ -597,12 +729,16 @@
 
 (defn handle-add [owner event]
   (.preventDefault event)
-  (let [qty (js/parseInt (om/get-state owner :quantity))]
+  (let [qty (js/parseInt (om/get-state owner :quantity))
+        card (nth (om/get-state owner :matches) (om/get-state owner :selected))
+        best-card (lookup (:side card) card)]
     (if (js/isNaN qty)
       (om/set-state! owner :quantity 3)
-      (do (put! (om/get-state owner :edit-channel)
-                {:qty qty
-                 :card (nth (om/get-state owner :matches) (om/get-state owner :selected))})
+      (let [max-qty (or (:limited best-card) 3)
+            limit-qty (if (> qty max-qty) max-qty qty)]
+        (put! (om/get-state owner :edit-channel)
+                {:qty limit-qty
+                 :card best-card})
           (om/set-state! owner :quantity 3)
           (om/set-state! owner :query "")
           (-> ".deckedit .lookup" js/$ .select)))))
@@ -643,15 +779,36 @@
                  (:title (nth matches i))])]))]]))))
 
 (defn deck-collection
-  [sets decks active-deck]
-  (for [deck (sort-by :date > decks)]
-    [:div.deckline {:class (when (= active-deck deck) "active")
-                    :on-click #(put! select-channel deck)}
-     [:img {:src (image-url (:identity deck))}]
-     [:div.float-right (deck-status-span sets deck)]
-     [:h4 (:name deck)]
-     [:div.float-right (-> (:date deck) js/Date. js/moment (.format "MMM Do YYYY"))]
-     [:p (get-in deck [:identity :title])]]))
+  [{:keys [sets decks decks-loaded active-deck]} owner]
+  (reify
+    om/IRenderState
+    (render-state [this state]
+      (sab/html
+        (cond
+          (not decks-loaded) [:h4 "Loading deck collection..."]
+          (empty? decks) [:h4 "No decks"]
+          :else [:div
+                 (for [deck (sort-by :date > decks)]
+                   [:div.deckline {:class (when (= active-deck deck) "active")
+                                   :on-click #(put! select-channel deck)}
+                    [:img {:src (image-url (:identity deck))
+                           :alt (get-in deck [:identity :title] "")}]
+                    [:div.float-right (deck-status-span sets deck)]
+                    [:h4 (:name deck)]
+                    [:div.float-right (-> (:date deck) js/Date. js/moment (.format "MMM Do YYYY"))]
+                    [:p (get-in deck [:identity :title]) [:br]
+                     (when (and (:stats deck) (not= "none" (get-in @app-state [:options :deckstats])))
+                       (let [stats (:stats deck)
+                             games (or (:games stats) 0)
+                             started (or (:games-started stats) 0)
+                             completed (or (:games-completed stats) 0)
+                             wins (or (:wins stats) 0)
+                             losses (or (:loses stats) 0)]
+                         ; adding key :games to handle legacy stats before adding started vs completed
+                         [:span "  Games: " (+ started games)
+                          " - Completed: " (+ completed games)
+                          " - Won: " wins " (" (num->percent wins (+ wins losses)) "%)"
+                          " - Lost: " losses]))]])])))))
 
 (defn line-span
   "Make the view of a single line in the deck - returns a span"
@@ -659,7 +816,7 @@
   [:span qty " "
    (if-let [name (:title card)]
      (let [infaction (noinfcost? identity card)
-           wanted (mostwanted? card)
+           banned (banned? card)
            allied (alliance-is-free? cards line)
            valid (and (allowed? card identity)
                       (legal-num-copies? identity line))
@@ -667,26 +824,27 @@
            modqty (if (is-prof-prog? deck card) (- qty 1) qty)]
        [:span
         [:span {:class (cond
-                         (and valid released) "fake-link"
+                         (and valid released (not banned)) "fake-link"
                          valid "casual"
                          :else "invalid")
-                :on-mouse-enter #(put! zoom-channel card)
+                :on-mouse-enter #(put! zoom-channel line)
                 :on-mouse-leave #(put! zoom-channel false)} name]
-        (when (or wanted (not infaction))
-          (let [influence (* (:factioncost card) modqty)]
-            (list " "
-                  [:span.influence
-                   {:class (faction-label card)
-                    :dangerouslySetInnerHTML
-                    #js {:__html
-                         (str
-                           ;; normal influence
-                           (when (and (not infaction) (not allied)) (influence-dots influence))
-                           ;; satisfies alliance criterion
-                           (when allied (alliance-dots influence))
-                           ;; on mwl
-                           (when wanted (restricted-dots (* (get-mwl-value card) modqty))))}}])))])
+        (card-influence-html card modqty infaction allied)])
      card)])
+
+(defn- create-identity
+  [state target-value]
+  (let [side (get-in state [:deck :identity :side])
+        json-map (.parse js/JSON (.. target-value -target -value))
+        id-map (js->clj json-map :keywordize-keys true)
+        card (lookup side id-map)]
+    (if-let [art (:art id-map)]
+      (assoc card :art art)
+      card)))
+
+(defn- identity-option-string
+  [card]
+  (.stringify js/JSON (clj->js {:title (:title card) :id (:code card) :art (:art card)})))
 
 (defn deck-builder
   "Make the deckbuilder view"
@@ -695,6 +853,7 @@
     om/IInitState
     (init-state [this]
       {:edit false
+       :old-deck nil
        :edit-channel (chan)
        :deck nil})
 
@@ -714,9 +873,11 @@
                 (let [new-qty (+ (or (:qty existing-line) 0) (:qty edit))
                       rest (remove match? cards)
                       draft-id (is-draft-id? (om/get-state owner [:deck :identity]))
-                      new-cards (cond (and (not draft-id) (> new-qty max-qty)) (conj rest {:qty max-qty :card card})
+                      new-cards (cond (and (not draft-id) (> new-qty max-qty))
+                                        (conj rest (assoc existing-line :qty max-qty))
                                       (<= new-qty 0) rest
-                                      :else (conj rest {:qty new-qty :card card}))]
+                                      (empty? existing-line) (conj rest {:qty new-qty :card card})
+                                      :else (conj rest (assoc existing-line :qty new-qty)))]
                   (om/set-state! owner [:deck :cards] new-cards))
                 (deck->str owner)))))
       (go (while true
@@ -733,13 +894,15 @@
             [:button {:on-click #(new-deck "Corp" owner)} "New Corp deck"]
             [:button {:on-click #(new-deck "Runner" owner)} "New Runner deck"]]
            [:div.deck-collection
-            (cond
-              (not decks-loaded) [:h4 "Loading deck collection..."]
-              (empty? decks) [:h4 "No decks"]
-              :else (deck-collection sets decks (om/get-state owner :deck)))]
+            (when-not (:edit state)
+              (om/build deck-collection {:sets sets :decks decks :decks-loaded decks-loaded :active-deck (om/get-state owner :deck)}))
+            ]
            [:div {:class (when (:edit state) "edit")}
-            (when-let [card (om/get-state owner :zoom)]
-              (om/build card-view card))]]
+            (when-let [line (om/get-state owner :zoom)]
+              (let [art (:art line)
+                    id (:id line)
+                    updated-card (add-params-to-card (:card line) id art)]
+              (om/build card-view updated-card {:state {:cursor cursor}})))]]
 
           [:div.decklist
            (when-let [deck (:deck state)]
@@ -751,33 +914,39 @@
                 (cond
                   edit? [:div.button-bar
                          [:button {:on-click #(save-deck cursor owner)} "Save"]
-                         [:button {:on-click #(end-edit owner)} "Cancel"]]
+                         [:button {:on-click #(cancel-edit owner)} "Cancel"]]
                   delete? [:div.button-bar
                            [:button {:on-click #(handle-delete cursor owner)} "Confirm Delete"]
                            [:button {:on-click #(end-delete owner)} "Cancel"]]
                   :else [:div.button-bar
                          [:button {:on-click #(edit-deck owner)} "Edit"]
-                         [:button {:on-click #(delete-deck owner)} "Delete"]])
+                         [:button {:on-click #(delete-deck owner)} "Delete"]
+                         (when (and (:stats deck) (not= "none" (get-in @app-state [:options :deckstats])))
+                           [:button {:on-click #(clear-deck-stats cursor owner)} "Clear Stats"])])
                 [:h3 (:name deck)]
                 [:div.header
-                 [:img {:src (image-url identity)}]
-                 [:h4.fake-link {:on-mouse-enter #(put! zoom-channel identity)
-                                 :on-mouse-leave #(put! zoom-channel false)} (:title identity)]
+                 [:img {:src (image-url identity)
+                        :alt (:title identity)}]
+                 [:h4 {:class (if (released? (:sets @app-state) identity) "fake-link" "casual")
+                       :on-mouse-enter #(put! zoom-channel {:card identity :art (:art identity) :id (:id identity)})
+                       :on-mouse-leave #(put! zoom-channel false)}
+                  (:title identity)
+                  (if (banned? identity)
+                    banned-span
+                    (when (:rotated identity) rotated-span))]
                  (let [count (card-count cards)
                        min-count (min-deck-size identity)]
                    [:div count " cards"
                     (when (< count min-count)
                       [:span.invalid (str " (minimum " min-count ")")])])
                  (let [inf (influence-count deck)
-                       mwl (universalinf-count deck)
-                       total (+ mwl inf)
                        id-limit (id-inf-limit identity)]
                    [:div "Influence: "
                     ;; we don't use valid? and mwl-legal? functions here, since it concerns influence only
-                    [:span {:class (if (> total id-limit) (if (> inf id-limit) "invalid" "casual") "legal")} total]
+                    [:span {:class (if (> inf id-limit) (if (> inf id-limit) "invalid" "casual") "legal")} inf]
                     "/" (if (= INFINITY id-limit) "∞" id-limit)
-                    (if (pos? total)
-                      (list " " (influence-html deck) (restricted-html deck)))])
+                    (if (pos? inf)
+                      (list " " (deck-influence-html deck)))])
                  (when (= (:side identity) "Corp")
                    (let [min-point (min-agenda-points deck)
                          points (agenda-points deck)]
@@ -785,7 +954,7 @@
                       (when (< points min-point)
                         [:span.invalid " (minimum " min-point ")"])
                       (when (> points (inc min-point))
-                        [:span.invalid " (maximum" (inc min-point) ")"])]))
+                        [:span.invalid " (maximum " (inc min-point) ")"])]))
                  [:div (deck-status-span sets deck true true)]]
                 [:div.cards
                  (for [group (sort-by first (group-by #(get-in % [:card :type]) cards))]
@@ -811,10 +980,13 @@
                                :on-change #(om/set-state! owner [:deck :name] (.. % -target -value))}]]
             [:p
              [:h3 "Identity"]
-             [:select.identity {:value (get-in state [:deck :identity :title])
-                                :on-change #(om/set-state! owner [:deck :identity] (get-card (.. % -target -value)))}
-              (for [card (sort-by :title (side-identities (get-in state [:deck :identity :side])))]
-                [:option (:title card)])]]
+             [:select.identity {:value (identity-option-string (get-in state [:deck :identity]))
+                                :on-change #(om/set-state! owner [:deck :identity] (create-identity state %))}
+              (let [idents (side-identities (get-in state [:deck :identity :side]))]
+                (for [card (sort-by :display-name idents)]
+                  [:option
+                   {:value (identity-option-string card)}
+                   (:display-name card)]))]]
             (om/build card-lookup cursor {:state state})
             [:h3 "Decklist"
              [:span.small "(Type or paste a decklist, it will be parsed)" ]]]

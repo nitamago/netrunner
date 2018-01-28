@@ -60,10 +60,20 @@ removePlayer = (socket) ->
       if spectator.id is socket.id
         game.spectators.splice(i, 1)
         break
+    if game.started and game.players.length is 1
+      requester.send(JSON.stringify({action: "finaluser-add", user: game.players[0], gameid: socket.gameid}))
     if game.players.length is 0 and game.spectators.length is 0
+      # Store the list of player sockets for the game before we delete the game
+      stats.sockets = []
+      if game.endingPlayers
+        for player in game.endingPlayers
+          stats.sockets.push(player.id)
       delete games[socket.gameid]
       requester.send(JSON.stringify({action: "remove", gameid: socket.gameid}))
       refreshLobby("delete", socket.gameid)
+      # Send a message to players telling browser to pull updated stats
+      for id in stats.sockets
+        stats.to(id).emit("netrunner", {channel: 'stats', msg: 'updatestats'})
     else
       refreshLobby("update", socket.gameid)
     socket.leave(socket.gameid)
@@ -71,9 +81,22 @@ removePlayer = (socket) ->
 
   for k, v of games
     if (not v.started or v.players.length < 2) and (new Date() - v.date) > 3600000
-
       delete games[k]
       refreshLobby("delete", v.gameid)
+
+rejoinGame = (socket, gameid, user, options) ->
+  game = games[gameid]
+  if game and game.started and game.players.length < 2
+    side = if game.players.length is 1 then swapSide(game.players[0].side) else "Corp"
+    user.id = socket.id
+    game.players.push(user)
+    # Replace the game end player list with the new list
+    game.endingPlayers = game.players.slice(0)
+    socket.join(gameid)
+    socket.gameid = gameid
+    socket.emit("netrunner", {type: "game", gameid: gameid})
+    refreshLobby("update", gameid)
+    requester.send(JSON.stringify({action: "finaluser-del", gameid: socket.gameid}))
 
 joinGame = (socket, gameid, options) ->
   game = games[gameid]
@@ -88,12 +111,104 @@ joinGame = (socket, gameid, options) ->
 getUsername = (socket) ->
   ((socket.request || {}).user || {}).username
 
+users_blocked_from_game = (game) ->
+  blocked_users = []
+  for user in game.players
+    if user.options['blocked-users']
+      for blocked in user.options['blocked-users']
+        blocked_users.push(blocked)
+  blocked_users
+
+user_allowed_in_game = (username, game) ->
+  not_allowed = username in users_blocked_from_game(game)
+  not not_allowed
+
+##
+## User/Deck Stats
+##
+
+save_stats = (option, room) ->
+  (option is "always") or ((option is "competitive") and (room is "competitive"))
+
+inc_deck = (deck, key) ->
+  if deck
+    db.collection('decks').update {_id: mongoskin.helper.toObjectID(deck)},
+      {$inc: {"#{key}" : 1}}, (err) ->
+        throw err if err
+
+inc_game_complete = (username, side) ->
+  if username
+    db.collection('users').update {username: username},
+      {$inc: {"stats.games-completed" : 1, "stats.games-completed-#{side}" : 1}}, (err) ->
+        throw err if err
+
+inc_game_end = (username, side, outcome) ->
+  if username
+    db.collection('users').update {username: username},
+      {$inc: {"stats.#{outcome}": 1, "stats.#{outcome}-#{side}" : 1}}, (err) ->
+        throw err if err
+
+inc_game = (user, room, outcome) ->
+  if user and user.user
+    # deck stats
+    if save_stats(user.options.deckstats, room)
+      deckID = user['deck-id']
+      if deckID
+        inc_deck(deckID, "stats.#{outcome}")
+        inc_deck(deckID, "stats.games-completed")
+
+    # user game stats
+    username = user.user.username
+    side = user.identity.side.toLowerCase()
+    inc_game_complete(username, side) # everyone gets game completion stats
+
+    if save_stats(user.options.gamestats, room)
+      inc_game_end(username, side, outcome)
+
+inc_game_win = (winner, room) ->
+  inc_game(winner, room, "wins")
+
+inc_game_loss = (loser, room) ->
+  inc_game(loser, room, "loses")
+
+inc_game_final_user = (user, room) ->
+  if user
+    side = user.identity.side.toLowerCase()
+    inc_game_complete(user.user.username, side)
+
+  if save_stats(user.options.deckstats, room)
+    deckID = user['deck-id']
+    inc_deck(deckID, "stats.games-completed") if deckID
+
+inc_game_start = (user, side, room) ->
+  if user
+    db.collection('users').update {username: user.user.username},
+      {$inc: {"stats.games-started" : 1, "stats.games-started-#{side}" : 1}}, (err) ->
+        console.log(err) if err
+
+  if save_stats(user.options.deckstats, room)
+    deckID = user['deck-id']
+    inc_deck(deckID, "stats.games-started") if deckID
+
+inc_corp_game_start = (user, room) ->
+  inc_game_start(user, "corp", room)
+
+inc_runner_game_start = (user, room) ->
+  inc_game_start(user, "runner", room)
+
 # ZeroMQ
 clojure_hostname = process.env['CLOJURE_HOST'] || "127.0.0.1"
+requester_connected = false
 requester = zmq.socket('req')
 requester.on 'connect', (fd, ep) ->
+  requester_connected = true
   db.collection("cards").find().sort(_id: 1).toArray (err, data) ->
     requester.send(JSON.stringify({action: "initialize", cards: data}))
+
+requester.on 'close', (fd,ep) ->
+  requester_connected = false
+requester.on 'disconnect', (fd,ep) ->
+  requester_connected = false
 
 requester.monitor(500, 0)
 requester.connect("tcp://#{clojure_hostname}:1043")
@@ -132,6 +247,18 @@ requester.on 'message', (data) ->
       }
       db.collection('gamestats').update {gameid: response.gameid}, {$set: g}, (err) ->
         throw err if err
+
+      if response.state.corp.user and response.state.runner.user # have two users in the game
+        room = response.state.room
+        inc_corp_game_start(response.state.corp, room)
+        inc_runner_game_start(response.state.runner, room)
+        if response.state.winner # and someone won
+          inc_game_win(response.state[response.state.winner], room)
+          inc_game_loss(response.state[response.state.loser], room)
+        else if response.state["final-user"] # someone left before the game was won
+          final_side = response.state["final-user"].side
+          inc_game_final_user(response.state[final_side], room)
+
   else
     if (games[response.gameid])
       sendGameResponse(games[response.gameid], response)
@@ -149,11 +276,18 @@ io.use (socket, next) ->
   else
     next()
 
+stats = io.of('/stats').on 'connection', (socket) ->
+  socket.on 'netrunner', (msg) ->
+    stats.emit('netrunner', msg)
+
 chat = io.of('/chat').on 'connection', (socket) ->
   socket.on 'netrunner', (msg) ->
-    msg.date = new Date()
-    chat.emit('netrunner', msg)
-    db.collection('messages').insert msg, (err, result) ->
+    if socket.request.user
+      msg.date = new Date()
+      msg.username = socket.request.user.username
+      msg.emailhash = socket.request.user.emailhash
+      chat.emit('netrunner', msg)
+      db.collection('messages').insert msg, (err, result) ->
 
 lobby = io.of('/lobby').on 'connection', (socket) ->
   socket.emit("netrunner", {type: "games", games: games})
@@ -176,6 +310,7 @@ lobby = io.of('/lobby').on 'connection', (socket) ->
           title: msg.title.substring(0,30)
           allowspectator: msg.allowspectator
           spectatorhands: msg.spectatorhands
+          mutespectators: false
           password: if msg.password then crypto.createHash('md5').update(msg.password).digest('hex') else ""
           room: msg.room
           players: [{user: socket.request.user, id: socket.id, side: msg.side, options: msg.options}]
@@ -206,6 +341,18 @@ lobby = io.of('/lobby').on 'connection', (socket) ->
       when "join"
         game = games[msg.gameid]
 
+        unless game
+          fn("invalid game")
+          return
+
+        unless socket.request.user
+          fn("invalid user")
+          return
+
+        unless user_allowed_in_game(getUsername(socket), game)
+          fn("not allowed")
+          return
+
         if not game.password or game.password.length is 0 or (msg.password and crypto.createHash('md5').update(msg.password).digest('hex') is game.password)
           fn("join ok")
           joinGame(socket, msg.gameid, msg.options)
@@ -219,8 +366,26 @@ lobby = io.of('/lobby').on 'connection', (socket) ->
 
       when "watch"
         game = games[msg.gameid]
+
+        unless game
+          fn("invalid game")
+          return
+
+        unless socket.request.user
+          fn("invalid user")
+          return
+
+        unless game.allowspectator
+          fn("not allowed")
+          return
+
+        unless user_allowed_in_game(getUsername(socket), game)
+          fn("not allowed")
+          return
+
         if not game.password or game.password.length is 0 or (msg.password and crypto.createHash('md5').update(msg.password).digest('hex') is game.password)
           if game
+            fn("watch ok")
             game.spectators.push({user: socket.request.user, id: socket.id})
             socket.join(msg.gameid)
             socket.gameid = msg.gameid
@@ -236,6 +401,33 @@ lobby = io.of('/lobby').on 'connection', (socket) ->
         else
           fn("invalid password")
 
+      when "rejoin"
+        game = games[msg.gameid]
+        if game and game.started and game.players.length == 1
+          in_game = game.originalPlayers.filter (p) -> p.user._id == socket.request.user._id
+          if in_game.length > 0
+            rejoinGame(socket, msg.gameid, in_game[0], null)
+            requester.send(JSON.stringify({action: "rejoin", user: socket.request.user, gameid: socket.gameid, text: "#{socket.request.user.username} rejoined the game."}))
+
+      when "mute-spectators"
+        game = games[msg.gameid]
+        if game
+          game.mutespectators = msg.mutestate
+          refreshLobby("update", msg.gameid)
+          sendLobby()
+          if game.mutespectators
+            str = "muted"
+          else
+            str = "unmuted"
+          text = "#{getUsername(socket)} #{str} spectators."
+          if game.started
+            requester.send(JSON.stringify({action: "notification", gameid: msg.gameid, text: text}))
+          else
+            socket.broadcast.to(msg.gameid).emit 'netrunner',
+              type: "say"
+              user: "__system__"
+              text: text
+
       when "reconnect"
         game = games[msg.gameid]
         if game and game.started
@@ -243,6 +435,11 @@ lobby = io.of('/lobby').on 'connection', (socket) ->
           requester.send(JSON.stringify({action: "notification", gameid: socket.gameid, text: "#{getUsername(socket)} reconnected."}))
 
       when "say"
+        game = games[msg.gameid]
+        unless user_allowed_in_game(getUsername(socket), game)
+          fn("not allowed")
+          return
+
         lobby.to(msg.gameid).emit("netrunner", {type: "say", user: socket.request.user, text: msg.text})
 
       when "swap"
@@ -266,36 +463,58 @@ lobby = io.of('/lobby').on 'connection', (socket) ->
           lobby.to(msg.gameid).emit('netrunner', {type: "games", gamesdiff: updateMsg})
 
       when "start"
-        game = games[socket.gameid]
-        if game
-          if game.players.length is 2
-            corp = if game.players[0].side is "Corp" then game.players[0] else game.players[1]
-            runner = if game.players[0].side is "Runner" then game.players[0] else game.players[1]
-            g = {
-              gameid: socket.gameid
-              startDate: (new Date()).toISOString()
-              title: game.title
-              room: game.room
-              corp: corp.user.username
-              runner: runner.user.username
-              corpIdentity: if corp.deck then corp.deck.identity.title else null
-              runnerIdentity: if runner.deck then runner.deck.identity.title else null
-            }
-            db.collection('gamestats').insert g, (err, data) ->
-              console.log(err) if err
-          game.started = true
-          msg = games[socket.gameid]
-          msg.action = "start"
-          msg.gameid = socket.gameid
-          requester.send(JSON.stringify(msg))
-          for player in game.players
-            player.faction = if player.deck then player.deck.identity.faction else null
-            player.identity = if player.deck then player.deck.identity.title else null
-            delete player.deck
-          refreshLobby("update", msg.gameid)
+        if !requester_connected
+          lobby.to(msg.gameid).emit 'netrunner',
+            type: "say"
+            user: "__system__"
+            notification: "ting"
+            text: "Unable to connect to game server, please try again."
+          lobby.to(msg.gameid).emit 'netrunner',
+            type: "lobby-notification"
+            text: "Unable to start game. Please try again."
+            severity: "error"
+        else
+          game = games[socket.gameid]
+          if game
+            if game.players.length is 2
+              corp = if game.players[0].side is "Corp" then game.players[0] else game.players[1]
+              runner = if game.players[0].side is "Runner" then game.players[0] else game.players[1]
+              g = {
+                gameid: socket.gameid
+                startDate: (new Date()).toISOString()
+                title: game.title
+                room: game.room
+                corp: corp.user.username
+                runner: runner.user.username
+                corpIdentity: if corp.deck then corp.deck.identity.title else null
+                runnerIdentity: if runner.deck then runner.deck.identity.title else null
+              }
+              db.collection('gamestats').insert g, (err, data) ->
+                console.log(err) if err
+            game.started = true
+            game.originalPlayers = game.players.slice(0)
+            game.endingPlayers = game.players.slice(0)
+            msg = games[socket.gameid]
+            msg.action = "start"
+            msg.gameid = socket.gameid
+            requester.send(JSON.stringify(msg))
+            for player in game.players
+              player.faction = if player.deck then player.deck.identity.faction else null
+              player.identity = if player.deck then player.deck.identity.title else null
+              if player.deck
+                deckid = player.deck._id
+                delete player.deck
+                player.deck = {}
+                player.deck._id = deckid
+            refreshLobby("update", msg.gameid)
 
       when "do"
+        if msg.command == "say"
+          game = games[socket.gameid]
+          if game and msg.side == "spectator" and game.mutespectators
+            return
         try
+          msg.user = socket.request.user
           requester.send(JSON.stringify(msg))
         catch err
           console.log(err)
@@ -366,7 +585,7 @@ passport.deserializeUser (id, done) ->
     console.log err if err
     if not user.options then user.options = {}
     done(err, {username: user.username, emailhash: user.emailhash, _id: user._id, special: user.special,\
-      isadmin: user.isadmin, options: user.options})
+      isadmin: user.isadmin, options: user.options, stats: user.stats})
 
 # Routes
 app.options('*', cors())
@@ -380,7 +599,7 @@ app.get '/logout', (req, res) ->
   req.logout()
   res.redirect('/')
 
-app.post '/register', (req, res) ->
+app.post '/register', (req, res, next) ->
   if req.body.username.length > 20
     res.status(423).send({message: 'Usernames are limited to 20 characters'})
   else
@@ -399,19 +618,24 @@ app.post '/register', (req, res) ->
             hashPassword req.body.password, (err, hash) ->
               req.body.password = hash
               db.collection('users').insert req.body, (err) ->
-                res.send("error: #{err}") if err
-                req.login req.body, (err) -> next(err) if err
-                db.collection('decks').find({username: '__demo__'}).toArray (err, demoDecks) ->
-                  throw err if err
-                  for deck in demoDecks
-                    delete deck._id
-                    deck.username = req.body.username
-                  if demoDecks.length > 0
-                    db.collection('decks').insert demoDecks, (err, newDecks) ->
-                      throw err if err
-                      res.status(200).json({user: req.user, decks: newDecks})
-                  else
-                    res.status(200).json({user: req.user, decks: []})
+                if err
+                  res.send("error: #{err}")
+                else
+                  req.login req.body, (err) ->
+                    if err
+                      next(err)
+                    else
+                      db.collection('decks').find({username: '__demo__'}).toArray (err, demoDecks) ->
+                        throw err if err
+                        for deck in demoDecks
+                          delete deck._id
+                          deck.username = req.body.username
+                        if demoDecks.length > 0
+                          db.collection('decks').insert demoDecks, (err, newDecks) ->
+                            throw err if err
+                            res.status(200).json({user: req.user, decks: newDecks})
+                        else
+                          res.status(200).json({user: req.user, decks: []})
 
 app.post '/forgot', (req, res) ->
   async.waterfall [
@@ -469,7 +693,7 @@ app.get '/reset/:token', (req, res) ->
     if user
       db.collection('users').update {username: user.username}, {$set: {lastConnection: new Date()}}, (err) ->
       token = jwt.sign(user, config.salt, {expiresIn: '6h'})
-    res.render('reset.jade', { user: req.user })
+    res.render('reset.pug', { user: req.user })
 
 app.post '/reset/:token', (req, res) ->
   async.waterfall [
@@ -517,10 +741,31 @@ app.post '/reset/:token', (req, res) ->
 app.post '/update-profile', (req, res) ->
   if req.user
     db.collection('users').update {username: req.user.username}, {$set: {options: {background: req.body.background,\
-      'show-alt-art': req.body['show-alt-art']}}}, \
+      'show-alt-art': req.body['show-alt-art'], 'blocked-users': req.body['blocked-users'], \
+      'alt-arts': req.body['alt-arts'], deckstats: req.body['deckstats'], gamestats: req.body['gamestats']}}},
       (err) ->
         console.log(err) if err
-        res.status(200).send({message: 'OK', background: req.body.background, altarts: req.body['alt-arts']})
+        res.status(200).send({message: 'OK', background: req.body.background, \
+          altarts: req.body['alt-arts'], \
+          blockedusers: req.body['blocked-users'], \
+          deckstats: req.body['deckstats'], gamestats: req.body['gamestats']})
+  else
+    res.status(401).send({message: 'Unauthorized'})
+
+app.post '/user/clearstats', (req, res) ->
+  if req.user
+    db.collection('users').update {username: req.user.username}, {$unset: {stats: ""}}, \
+      (err) ->
+        console.log(err) if err
+        res.status(200).send({message: 'OK'})
+  else
+    res.status(401).send({message: 'Unauthorized'})
+
+app.get '/user', (req, res) ->
+  if req.user
+    db.collection('users').find({username: req.user.username}).toArray (err, data) ->
+      throw err if err
+      res.status(200).json(data)
   else
     res.status(401).send({message: 'Unauthorized'})
 
@@ -545,6 +790,29 @@ app.get '/data/decks', (req, res) ->
 
 app.post '/data/decks', (req, res) ->
   deck = req.body
+  sanitized_cards = deck.cards.map (entry) ->
+    sanitized_entries = {}
+    for k, v of entry
+      sanitized_entries[k] = v if k in ["qty", "card", "id", "art"]
+    sanitized_entries
+  deck.cards = sanitized_cards
+  if req.user
+    deck.username = req.user.username
+    if deck._id
+      id = deck._id
+      delete deck._id
+      db.collection('decks').update {_id: mongoskin.helper.toObjectID(id)}, {$set: deck}, (err) ->
+        console.log(err) if err
+        res.status(200).send({message: 'OK'})
+    else
+      db.collection('decks').insert deck, (err, data) ->
+        console.log(err) if err
+        res.status(200).send(data.ops[0])
+  else
+    res.status(401).send({message: 'Unauthorized'})
+
+app.post '/data/decks/clearstats', (req, res) ->
+  deck = req.body
   if req.user
     deck.username = req.user.username
     if deck._id
@@ -554,9 +822,7 @@ app.post '/data/decks', (req, res) ->
         console.log(err) if err
         res.status(200).send({message: 'OK'})
     else
-      db.collection('decks').insert deck, (err, data) ->
-        console.log(err) if err
-        res.status(200).send(data.ops[0])
+      res.status(401).send({message: 'Deck ID does not exist'})
   else
     res.status(401).send({message: 'Unauthorized'})
 
@@ -570,7 +836,11 @@ app.post '/data/decks/delete', (req, res) ->
 
 app.get '/data/donators', (req, res) ->
   db.collection('donators').find({}).sort({amount: -1}).toArray (err, data) ->
-    res.status(200).json(d.username or d.name for d in data)
+    if data
+      res.status(200).json(d.username or d.name for d in data)
+    else
+      res.status(200).json([])
+    throw err if err
 
 app.get '/data/news', (req, res) ->
   if process.env['TRELLO_API_KEY']
@@ -610,7 +880,7 @@ app.get '/data/:collection/:field/:value', (req, res) ->
 
 app.get '/admin/announce', (req, res) ->
   if req.user and req.user.isadmin
-    res.render('announce.jade', {user : req.user})
+    res.render('announce.pug', {user : req.user})
   else
     res.status(401).send({message: 'Unauthorized'})
 
@@ -631,7 +901,7 @@ app.get '/admin/init', (req, res) ->
 
 app.get '/admin/version', (req, res) ->
   if req.user and req.user.isadmin
-    res.render('version.jade', {user : req.user, version: app.locals.version})
+    res.render('version.pug', {user : req.user, version: app.locals.version})
   else
     res.status(401).send({message: 'Unauthorized'})
 
@@ -651,7 +921,7 @@ if env == 'development'
     if req.user
       db.collection('users').update {username: req.user.username}, {$set: {lastConnection: new Date()}}, (err) ->
       token = jwt.sign(req.user, config.salt)
-    res.render('index.jade', { user: req.user, env: 'dev', token: token, version: app.locals.version})
+    res.render('index.pug', { user: req.user, env: 'dev', token: token, version: app.locals.version})
 
 if env == 'production'
   console.log "Prod environment"
@@ -659,7 +929,7 @@ if env == 'production'
     if req.user
       db.collection('users').update {username: req.user.username}, {$set: {lastConnection: new Date()}}, (err) ->
       token = jwt.sign(req.user, config.salt, {expiresIn: '6h'})
-    res.render('index.jade', { user: req.user, env: 'prod', token: token, version: app.locals.version})
+    res.render('index.pug', { user: req.user, env: 'prod', token: token, version: app.locals.version})
 
 # Server
 terminate = () ->

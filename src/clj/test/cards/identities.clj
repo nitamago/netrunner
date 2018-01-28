@@ -99,11 +99,13 @@
       (default-corp)
       (make-deck "Apex: Invasive Predator" [(qty "Heartbeat" 2)]))
     (take-credits state :corp)
+    (core/end-phase-12 state :runner nil)
     (prompt-choice :runner "Done") ; no facedown install on turn 1
     (play-from-hand state :runner "Heartbeat")
     (is (= 1 (count (get-in @state [:runner :rig :hardware]))))
     (take-credits state :runner)
     (take-credits state :corp)
+    (core/end-phase-12 state :runner nil)
     (prompt-select :runner (find-card "Heartbeat" (:hand (get-runner))))
     (is (= 1 (count (get-in @state [:runner :rig :facedown]))) "2nd console installed facedown")))
 
@@ -227,6 +229,40 @@
       (run-empty-server state "HQ")
       (is (= 4 (count (:discard (get-corp)))) "1 operation trashed from HQ; accessed non-operation in Archives first"))))
 
+(deftest edward-kim-maw
+  ;; Edward Kim - Do not trigger maw on first Operation access (due to trash)
+  (do-game
+    (new-game
+      (default-corp [(qty "Hedge Fund" 3) (qty "Restructure" 2)])
+      (make-deck "Edward Kim: Humanity's Hammer" [(qty "Maw" 1) (qty "Sure Gamble" 2)]))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Sure Gamble")
+    (play-from-hand state :runner "Maw")
+    (is (= 0 (count (:discard (get-corp)))) "No cards in Archives")
+    (run-empty-server state "HQ")
+    (is (= 1 (count (:discard (get-corp)))) "Only one card trashed from HQ, by Ed Kim")
+    (run-empty-server state "HQ")
+    (is (= 2 (count (:discard (get-corp)))) "One more card trashed from HQ, by Maw")))
+
+
+(deftest exile-customized-secretary
+  ;; Exile - simultaneous-resolution prompt shown for interaction with Customized Secretary
+  (do-game
+    (new-game
+      (default-corp)
+      (make-deck "Exile: Streethawk" [(qty "Customized Secretary" 3) (qty "Clone Chip" 3)
+                                      (qty "Sure Gamble" 3)]))
+    (take-credits state :corp)
+    (starting-hand state :runner ["Customized Secretary" "Clone Chip"])
+    (trash-from-hand state :runner "Customized Secretary")
+    (play-from-hand state :runner "Clone Chip")
+    (card-ability state :runner (get-hardware state 0) 0)
+    (prompt-select :runner (find-card "Customized Secretary" (:discard (get-runner))))
+    ;; Make sure the simultaneous-resolution prompt is showing with 2 choices
+    (is (= 2 (-> (get-runner) :prompt first :choices count)) "Simultaneous-resolution prompt is showing")
+    (prompt-choice :runner "Exile: Streethawk")
+    (is (= 1 (count (:hand (get-runner)))) "Exile drew a card")))
+
 (deftest gabriel-santiago
   ;; Gabriel Santiago - Gain 2c on first successful HQ run each turn
   (do-game
@@ -344,6 +380,18 @@
     (prompt-select :corp (get-ice state :hq 0))
     (is (= 3 (:credit (get-corp))) "Corp not charged for Architects of Tomorrow rez of Eli 1.0")))
 
+(deftest haas-bioroid-asa-group
+  ;; Asa Group - don't allow installation of operations
+  (do-game
+    (new-game
+      (make-deck "Asa Group: Security Through Vigilance" [(qty "Pup" 1) (qty "BOOM!" 1) (qty "Urban Renewal" 1)])
+      (default-runner))
+    (play-from-hand state :corp "Pup" "New remote")
+    (prompt-select :corp (find-card "BOOM!" (:hand (get-corp))))
+    (is (empty? (get-content state :remote1)) "Asa Group installed an event in a server")
+    (prompt-select :corp (find-card "Urban Renewal" (:hand (get-corp))))
+    (is (= "Urban Renewal" (:title (get-content state :remote1 0))) "Asa Group can install an asset in a remote")))
+
 (deftest haas-bioroid-engineering-the-future-employee-strike
   ;; EtF - interaction with Employee Strike
   (do-game
@@ -427,11 +475,13 @@
       (prompt-choice :runner "Steal")
       (let [dd (get-resource state 0)]
         (card-ability state :runner dd 0)
+        (prompt-select :runner (get-in (get-runner) [:scored 0]))
         (is (empty? (:prompt (get-corp))) "No Jemison prompt for Runner forfeit")
         (take-credits state :runner)
         (play-from-hand state :corp "Global Food Initiative" "New remote")
         (score-agenda state :corp (get-content state :remote2 0))
         (core/rez state :corp enf)
+        (prompt-select :corp (get-in (get-corp) [:scored 0]))
         (prompt-select :corp iwall)
         (is (= 4 (:advance-counter (refresh iwall))) "Jemison placed 4 advancements")))))
 
@@ -487,13 +537,32 @@
   ;; Personal Evolution - Prevent runner from running on remotes unless they first run on a central
   (do-game
     (new-game
-      (make-deck "Jinteki: Personal Evolution" [(qty "Braintrust" 1)])
+      (make-deck "Jinteki: Personal Evolution" [(qty "Braintrust" 6)])
       (default-runner [(qty "Sure Gamble" 3)]))
     (play-from-hand state :corp "Braintrust" "New remote")
     (take-credits state :corp)
     (run-empty-server state "Server 1")
     (prompt-choice :runner "Steal")
     (is (= 2 (count (:hand (get-runner)))) "Runner took 1 net damage from steal")))
+
+(deftest jinteki-potential-unleashed
+  ;; PU - when the runner takes at least one net damage, mill 1 from their deck
+  (do-game
+    (new-game (make-deck "Jinteki: Potential Unleashed" [(qty "Philotic Entanglement" 1) (qty "Neural EMP" 1) (qty "Braintrust" 3)])
+              (default-runner [(qty "Employee Strike" 10)]))
+    (play-from-hand state :corp "Braintrust" "New remote")
+    (play-from-hand state :corp "Braintrust" "New remote")
+    (take-credits state :corp)
+    (run-empty-server state "Server 1")
+    (prompt-choice :runner "Steal")
+    (run-empty-server state "Server 2")
+    (prompt-choice :runner "Steal")
+    (take-credits state :runner)
+    (play-from-hand state :corp "Philotic Entanglement" "New remote")
+    (score-agenda state :corp (get-content state :remote3 0))
+    (is (= 3 (count (:discard (get-runner)))))
+    (play-from-hand state :corp "Neural EMP")
+    (is (= 5 (count (:discard (get-runner)))))))
 
 (deftest jinteki-replicating-perfection
   ;; Replicating Perfection - Prevent runner from running on remotes unless they first run on a central
@@ -1076,7 +1145,7 @@
       (is (= 5 (:credit (get-corp))) "Rez cost increased by 1"))))
 
 (deftest rielle-kit-peddler-ability
-  ;; Rielle "Kit" Peddler - Give ice code gate
+  ;; Rielle "Kit" Peddler - Give ICE Code Gate
   (do-game
     (new-game (default-corp [(qty "Ice Wall" 2)])
               (make-deck "Rielle \"Kit\" Peddler: Transhuman" [(qty "Sure Gamble" 3)]))
@@ -1087,14 +1156,46 @@
           iwall (get-ice state :hq 0)]
       (core/rez state :corp iwall)
       (card-ability state :runner k 0)
-      (is (core/has-subtype? (refresh iwall) "Barrier") "Ice Wall has barrier")
-      (is (core/has-subtype? (refresh iwall) "Code Gate") "Ice Wall has code gate"))))
+      (is (core/has-subtype? (refresh iwall) "Barrier") "Ice Wall has Barrier")
+      (is (core/has-subtype? (refresh iwall) "Code Gate") "Ice Wall has Code Gate"))))
+
+(deftest skorpios
+  ; Remove a card from game when it moves to discard once per round
+  (do-game
+    (new-game (make-deck "Skorpios Defense Systems: Persuasive Power" [(qty "Hedge Fund" 1) (qty "Quandary" 4)])
+              (default-runner [(qty "The Maker's Eye" 1) (qty "Lucky Find" 1)]))
+    (play-from-hand state :corp "Hedge Fund")
+    (dotimes [_ 4] (core/move state :corp (first (:hand (get-corp))) :deck))
+    (take-credits state :corp)
+    (play-from-hand state :runner "Lucky Find")
+    (play-from-hand state :runner "The Maker's Eye")
+    (is (= :rd (get-in @state [:run :server 0])))
+    ; Don't allow a run-event in progress to be targeted #2963
+    (card-ability state :corp (get-in @state [:corp :identity]) 0)
+    (is (empty? (filter #(= "The Maker's Eye" (:title %)) (-> (get-corp) :prompt first :choices))) "No Maker's Eye choice")
+    (prompt-choice :corp "Cancel")
+    (run-successful state)
+    (prompt-choice :runner "Card from deck")
+    (is (= "You accessed Quandary" (-> (get-runner) :prompt first :msg)) "1st quandary")
+    (prompt-choice :runner "OK")
+    (prompt-choice :runner "Card from deck")
+    (is (= "You accessed Quandary" (-> (get-runner) :prompt first :msg)) "2nd quandary")
+    (prompt-choice :runner "OK")
+    (prompt-choice :runner "Card from deck")
+    (is (= "You accessed Quandary" (-> (get-runner) :prompt first :msg)) "3rd quandary")
+    (prompt-choice :runner "OK")
+    (is (not (:run @state)))
+    (card-ability state :corp (get-in @state [:corp :identity]) 0)
+    (prompt-choice :corp (find-card "The Maker's Eye" (:discard (get-runner))))
+    (is (= 1 (count (get-in @state [:runner :rfg]))) "One card RFGed")
+    (card-ability state :corp (get-in @state [:corp :identity]) 0)
+    (is (empty? (:prompt (get-corp))) "Cannot use Skorpios twice")))
 
 (deftest silhouette-expose-trigger-before-access
   ;; Silhouette - Expose trigger ability resolves completely before access. Issue #2173.
   (do-game
     (new-game
-      (default-corp [(qty "Psychic Field" 1) (qty "Fetal AI" 3)])
+      (default-corp [(qty "Psychic Field" 1) (qty "Fetal AI" 10)])
       (make-deck "Silhouette: Stealth Operative" [(qty "Feedback Filter" 1) (qty "Inside Job" 1)]))
     (starting-hand state :corp ["Psychic Field" "Fetal AI"])
     (play-from-hand state :corp "Psychic Field" "New remote")
@@ -1280,6 +1381,20 @@
         (card-ability state :corp bon 0)
         (is (= 1 (count (:discard (get-runner)))) "Runner took only 1 meat damage from BoN total")
         (is (= 0 (count (:prompt (get-corp))))))))
+
+(deftest weyland-builder-cleaners
+  ;; Builder of Nations - 2 meat damage from ID ability when The Cleaners is scored
+  (do-game
+    (new-game
+      (make-deck "Weyland Consortium: Builder of Nations" [(qty "The Cleaners" 3) (qty "Ice Wall" 3)])
+      (default-runner [(qty "Sure Gamble" 2)]))
+    (play-from-hand state :corp "The Cleaners" "New remote")
+    (let [clean (get-content state :remote1 0)]
+      (score-agenda state :corp clean)
+    (let [bon (get-in @state [:corp :identity])]
+      (card-ability state :corp bon 0)
+      (prompt-choice :corp "Yes")
+      (is (= 2 (count (:discard (get-runner)))) "Runner took 2 meat damage from BoN/Cleaners combo")))))
 
 (deftest whizzard
   ;; Whizzard - Recurring credits

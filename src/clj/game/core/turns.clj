@@ -5,13 +5,14 @@
 
 (def game-states (atom {}))
 
-(defn- card-implemented [card]
+(defn- card-implemented
   "Checks if the card is implemented. Looks for a valid return from `card-def`.
   If implemented also looks for `:implementation` key which may contain special notes.
   Returns either:
     nil - not implemented
     :full - implemented fully
     msg - string with implementation notes"
+  [card]
   (when-let [cdef (card-def card)]
     ;; Card is defined - hence implemented
     (if-let [impl (:implementation cdef)]
@@ -42,22 +43,29 @@
 
 (defn init-game
   "Initializes a new game with the given players vector."
-  [{:keys [players gameid spectatorhands] :as game}]
+  [{:keys [players gameid spectatorhands room] :as game}]
   (let [corp (some #(when (= (:side %) "Corp") %) players)
         runner (some #(when (= (:side %) "Runner") %) players)
         corp-deck (create-deck (:deck corp) (:user corp))
         runner-deck (create-deck (:deck runner) (:user runner))
+        corp-deck-id (get-in corp [:deck :_id])
+        runner-deck-id (get-in runner [:deck :_id])
+        corp-options (get-in corp [:options])
+        runner-options (get-in runner [:options])
         corp-identity (assoc (or (get-in corp [:deck :identity]) {:side "Corp" :type "Identity"}) :cid (make-cid))
         corp-identity (assoc corp-identity :implementation (card-implemented corp-identity))
         runner-identity (assoc (or (get-in runner [:deck :identity]) {:side "Runner" :type "Identity"}) :cid (make-cid))
         runner-identity (assoc runner-identity :implementation (card-implemented runner-identity))
         state (atom
                 {:gameid gameid :log [] :active-player :runner :end-turn true
+                 :room room
                  :rid 0 :turn 0 :eid 0
                  :sfx [] :sfx-current-id 0
                  :options {:spectatorhands spectatorhands}
                  :corp {:user (:user corp) :identity corp-identity
+                        :options corp-options
                         :deck (zone :deck corp-deck)
+                        :deck-id corp-deck-id
                         :hand []
                         :discard [] :scored [] :rfg [] :play-area []
                         :servers {:hq {} :rd{} :archives {}}
@@ -67,7 +75,9 @@
                         :agenda-point 0
                         :click-per-turn 3 :agenda-point-req 7 :keep false}
                  :runner {:user (:user runner) :identity runner-identity
+                          :options runner-options
                           :deck (zone :deck runner-deck)
+                          :deck-id runner-deck-id
                           :hand []
                           :discard [] :scored [] :rfg [] :play-area []
                           :rig {:program [] :resource [] :hardware []}
@@ -111,10 +121,10 @@
   ([deck] (create-deck deck nil))
   ([deck user]
    (shuffle (mapcat #(map (fn [card]
-                            (let [card (or (server-card (:title card) user) card)
-                                  c (make-card card)]
+                            (let [server-card (or (server-card (:title card) user) card)
+                                  c (assoc (make-card server-card) :art (:art card))]
                               (if-let [init (:init (card-def c))] (merge c init) c)))
-                          (repeat (:qty %) (:card %)))
+                          (repeat (:qty %) (assoc (:card %) :art (:art %))))
                     (shuffle (vec (:cards deck)))))))
 
 (defn make-rid
@@ -164,14 +174,25 @@
   "End phase 1.2 and trigger appropriate events for the player."
   [state side args]
   (turn-message state side true)
-  (gain state side :click (+ (get-in @state [side :click-per-turn]) (or (get-in @state [side :extra-click-temp]) 0)))
-  (swap! state dissoc-in [side :extra-click-temp])
-  (when-completed (trigger-event-sync state side (if (= side :corp) :corp-turn-begins :runner-turn-begins))
-                  (do (when (= side :corp)
-                        (draw state side))
-                      (swap! state dissoc (if (= side :corp) :corp-phase-12 :runner-phase-12))
-                      (when (= side :corp)
-                        (update-all-advancement-costs state side)))))
+  (let [extra-clicks (or (get-in @state [side :extra-click-temp]) 0)]
+    (gain state side :click (get-in @state [side :click-per-turn]))
+    (when-completed (trigger-event-sync state side (if (= side :corp) :corp-turn-begins :runner-turn-begins))
+                    (do (when (= side :corp)
+                          (draw state side)
+                          (trigger-event state side :corp-mandatory-draw))
+
+                        (cond
+
+                          (< extra-clicks 0)
+                          (lose state side :click (abs extra-clicks))
+
+                          (> extra-clicks 0)
+                          (gain state side :click extra-clicks))
+
+                        (swap! state dissoc-in [side :extra-click-temp])
+                        (swap! state dissoc (if (= side :corp) :corp-phase-12 :runner-phase-12))
+                        (when (= side :corp)
+                          (update-all-advancement-costs state side))))))
 
 (defn start-turn
   "Start turn."
@@ -210,6 +231,7 @@
         (trigger-event state side :corp-turn-ends))
       (doseq [a (get-in @state [side :register :end-turn])]
         (resolve-ability state side (:ability a) (:card a) (:targets a)))
+      (swap! state assoc-in [side :register-last-turn] (-> @state side :register))
       (let [rig-cards (apply concat (vals (get-in @state [:runner :rig])))
             hosted-cards (filter :installed (mapcat :hosted rig-cards))
             hosted-on-ice (->> (get-in @state [:corp :servers]) seq flatten (mapcat :ices) (mapcat :hosted))]

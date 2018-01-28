@@ -15,10 +15,14 @@
 (def ctx (ZMQ/context 1))
 
 (def spectator-commands
-  {"say" core/say})
+  {"say" core/say
+   "typing" core/typing
+   "typingstop" core/typingstop})
 
 (def commands
   {"say" core/say
+   "typing" core/typing
+   "typingstop" core/typingstop
    "concede" core/concede
    "system-msg" #(core/system-msg %1 %2 (:msg %3))
    "change" core/change
@@ -67,12 +71,14 @@
 (defn strip [state]
   (dissoc state :events :turn-events :per-turn :prevent :damage :effect-completed))
 
-(defn not-spectator? [state user]
+(defn not-spectator?
   "Returns true if the specified user in the specified state is not a spectator"
+  [state user]
   (and state (#{(get-in @state [:corp :user]) (get-in @state [:runner :user])} user)))
 
-(defn handle-do [user command state side args]
+(defn handle-do
   "Ensures the user is allowed to do command they are trying to do"
+  [user command state side args]
   (if (not-spectator? state user)
     ((commands command) state (keyword side) args)
     (when-let [cmd (spectator-commands command)]
@@ -110,6 +116,8 @@
     (private-card-vector state side deck)))
 
 (defn- private-states [state]
+  "Generates privatized states for the Corp, Runner and any spectators from the base state.
+  If `:spectatorhands` is on, all information is passed on to spectators as well."
   ;; corp, runner, spectator
   (let [corp-private (make-private-corp state)
         runner-private (make-private-runner state)
@@ -120,8 +128,7 @@
      (assoc @state :corp corp-private
                    :runner runner-deck)
      (if (get-in @state [:options :spectatorhands])
-       (assoc @state :corp (assoc-in corp-private [:hand] (get-in @state [:corp :hand]))
-                     :runner (assoc-in runner-private [:hand] (get-in @state [:runner :hand])))
+       (assoc @state :corp corp-deck :runner runner-deck)
        (assoc @state :corp corp-private :runner runner-private))]))
 
 (defn- reset-all-cards
@@ -143,9 +150,22 @@
              "remove" (do (swap! game-states dissoc gameid)
                           (swap! old-states dissoc gameid))
              "do" (handle-do user command state side args)
+             "finaluser-add" (swap! state assoc :final-user
+                                    {:username (get-in user [:user :username])
+                                     :deck-id (get-in user [:deck :_id])
+                                     :side (clojure.string/lower-case (:side user))})
+             "finaluser-del" (swap! state dissoc :final-user)
              "notification" (when state
-                              (swap! state update-in [:log] #(conj % {:user "__system__" :text text}))))
-
+                              (swap! state update-in [:log] #(conj % {:user "__system__" :text text})))
+             "rejoin"
+             (when state
+               ;; when rejoining, there is probably a new socket ID that needs to be set into the user.
+               (let [side (cond
+                            (= (:_id user) (get-in @state [:corp :user :_id])) :corp
+                            (= (:_id user) (get-in @state [:runner :user :_id])) :runner
+                            :else nil)]
+                 (swap! state assoc-in [side :user] user)
+                 (swap! state update-in [:log] #(conj % {:user "__system__" :text text})))))
            true)
        (catch Exception e
          (do (println "Error " action command (get-in args [:card :title]) e)
@@ -161,9 +181,10 @@
                     (do (println "Toast Error " action command (get-in args [:card :title]) e)
                         false)))))))
 
-(defn run [socket]
+(defn run
   "Main thread for handling commands from the UI server. Attempts to apply a command,
   then returns the resulting game state, or another message as appropriate."
+  [socket]
   (while true
       ;; Attempt to handle the command. If true is returned, then generate a successful
       ;; message. Otherwise generate an error message.
@@ -184,7 +205,7 @@
                     (let [[new-corp new-runner new-spect] (private-states new-state)]
                       (do
                         (swap! old-states assoc (:gameid msg) @new-state)
-                        (if (#{"start" "reconnect" "notification"} action)
+                        (if (#{"start" "reconnect" "notification" "rejoin"} action)
                           ;; send the whole state, not a diff
                           (.send socket (generate-string {:action      action
                                                           :runnerstate (strip new-runner)
@@ -211,6 +232,11 @@
 (def zmq-url (str "tcp://" (or (env :zmq-host) "127.0.0.1") ":1043"))
 
 (defn dev []
+  (Thread/setDefaultUncaughtExceptionHandler
+    (reify Thread$UncaughtExceptionHandler
+      (uncaughtException [_ thread ex]
+        (println "UNCAUGHT EXCEPTION " ex))))
+
   (println "[Dev] Listening on port 1043 for incoming commands...")
   (let [socket (.socket ctx ZMQ/REP)]
     (.bind socket zmq-url)
